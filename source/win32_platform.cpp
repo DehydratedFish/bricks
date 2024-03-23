@@ -1,5 +1,4 @@
 #include "platform.h"
-#include "rpmalloc/rpmalloc.h"
 
 #define UNICODE
 #define _UNICODE
@@ -33,6 +32,9 @@ INTERNAL void free_memory_buffer(Allocator alloc, MemoryBuffer *buffer) {
 }
 
 
+#ifdef USE_RPMALLOC
+
+#include "rpmalloc.h"
 INTERNAL void *rp_malloc_alloc_func(void *, s64 size, void *old, s64 old_size) {
     void *result = 0;
 
@@ -40,7 +42,7 @@ INTERNAL void *rp_malloc_alloc_func(void *, s64 size, void *old, s64 old_size) {
     auto arena = get_toolbox()->temporary_storage;
     if (old > arena.memory && old < arena.memory + arena.alloc) {
         print("Freeing memory from temporary storage with another allocator.\n");
-        die("Ohh nose!!!! Be careful with temporary data. Lost 2 days already.\n");
+        die("Ohh nose!!!! Be careful with temporary data. Lost 2 debugging already.\n");
     }
 #endif
 
@@ -58,6 +60,8 @@ INTERNAL void *rp_malloc_alloc_func(void *, s64 size, void *old, s64 old_size) {
 }
 
 Allocator RpmallocAllocator = {rp_malloc_alloc_func, 0};
+
+#endif // USE_RPMALLOC
 
 INTERNAL void *cstd_alloc_func(void *, s64 size, void *old, s64 old_size) {
     void *result = 0;
@@ -78,7 +82,7 @@ INTERNAL void *cstd_alloc_func(void *, s64 size, void *old, s64 old_size) {
 Allocator CstdAllocator = {cstd_alloc_func, 0};
 
 
-// TODO: Thread safety
+// TODO: Remove the toolbox stuff and return back to per function allocators.
 ApplicationToolbox PlatformToolbox;
 
 ApplicationToolbox *get_toolbox() {
@@ -122,11 +126,14 @@ int main_main() {
     CoInitialize(0);
     DEFER(CoUninitialize());
 
+#ifdef USE_RPMALLOC
     rpmalloc_initialize();
     DEFER(rpmalloc_finalize());
-
-    // PlatformToolbox.default_allocator = CstdAllocator;
     PlatformToolbox.default_allocator = RpmallocAllocator;
+#else
+    PlatformToolbox.default_allocator = CstdAllocator;
+#endif // USE_RPMALLOC
+
     PlatformToolbox.temporary_storage = allocate_arena(KILOBYTES(32));
     DEFER(destroy(&PlatformToolbox.temporary_storage));
 
