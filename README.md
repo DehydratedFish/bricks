@@ -70,7 +70,7 @@ Now all declared files and symbols are added to app.
 
 ## Includes
 
-If you run Bricks with the `register` command and you are in a folder containing a `blueprint` the folder will be added to the include list with it's name.
+If you run Bricks with the `register` command and you are in a folder containing a `blueprint` the folder will be added to the include list with it's name.  
 ATTENTION: I am lazy and just create a junktion to the folder inside the config of Bricks. Somehow this is only possible with admin privileges on windows.
 
 So if you have a `blueprint` in the folder `utiliy` and run `bricks register` you can now include it in other blueprints.
@@ -97,8 +97,8 @@ Executable: app {
 
 ## Building
 
-Just navigate to a folder with a `blueprint` and run `bricks`.
-If you want to register a `blueprint` just type `bricks register`
+Just navigate to a folder with a `blueprint` and run `bricks`.  
+If you want to register a `blueprint` just type `bricks register`.  
 For changing a build type just specify it with `bricks --build_type name` the name can be arbitrary but for `debug` debug symbols are enabled.
 
 Another thing of note are build groups. Running `bricks --group test` will only build Executables that have the property `group: "test";` for example.
