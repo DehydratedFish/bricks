@@ -1,17 +1,5 @@
 #pragma once
 
-#include "bricks.h"
-
-#ifdef DEVELOPER
-void fire_assert(char const *msg, char const *func, char const *file, int line);
-#define assert(expr) (void)((expr) || (fire_assert(#expr, __func__, __FILE__, __LINE__),0))
-#else
-#define assert(expr)
-#endif // DEVELOPER
-
-
-typedef void RenderFunc(struct GameState*);
-
 
 enum {
     PLATFORM_FILE_READ,
@@ -69,8 +57,8 @@ String platform_current_working_directory();
 String platform_application_data_directory();
 b32 platform_file_exists(String file);
 
-String platform_execute(String command);
 
+String platform_execute(String command);
 
 s32 application_main(Array<String> args);
 

@@ -5,29 +5,23 @@
 
 #if defined(WIN32) || defined(_WIN32)
 #define OS_WINDOWS
-#elif defined(linux)
-#define OS_LINUX
 #else
 #error "Platform not supported"
 #endif
 
-void fire_assert(char const *msg, char const *func, char const *file, int line); // NOTE: defined in platform.c
-
 
 #ifdef DEVELOPER
+void fire_assert(char const *msg, char const *func, char const *file, int line);
 #define assert(expr) (void)((expr) || (fire_assert(#expr, __func__, __FILE__, __LINE__),0))
-
 #else
 #define assert(expr)
-
 #endif // DEVELOPER
+
 
 #ifdef BOUNDS_CHECKING
 #define BOUNDS_CHECK(low, high, index, msg) {if ((index) < (low) || (index) > (high)) fire_assert(msg, __func__, __FILE__, __LINE__);}
-
 #else
 #define BOUNDS_CHECK(low, high, index, msg)
-
 #endif // BOUNDS_CHECKING
 
 
@@ -78,6 +72,12 @@ struct Allocator {
     AllocatorFunc *allocate;
     void *data;
 };
+
+Allocator default_allocator();
+Allocator temporary_allocator();
+s64  temporary_storage_mark();
+void temporary_storage_rewind(s64 mark);
+void reset_temporary_storage();
 
 struct MemoryArena {
     Allocator allocator;
@@ -316,5 +316,5 @@ DeferGuardBase<Functor> make_defer_guard_base(Functor f) {return f;}
 #define RESET_TEMP_STORAGE_ON_EXIT2(name) auto name = temporary_storage_mark(); DEFER(temporary_storage_rewind(name));
 
 #define CHANGE_AND_RESET_DEFAULT_ALLOCATOR(alloc) CHANGE_AND_RESET_DEFAULT_ALLOCATOR2(CONCAT(DEFAULT_ALLOCATOR_REWIND_MARK, __COUNTER__), alloc)
-#define CHANGE_AND_RESET_DEFAULT_ALLOCATOR2(name, alloc) auto name = default_allocator(); DEFER(get_toolbox()->default_allocator = name);
+#define CHANGE_AND_RESET_DEFAULT_ALLOCATOR2(name, alloc) auto name = default_allocator(); DEFER(default_allocator() = name);
 

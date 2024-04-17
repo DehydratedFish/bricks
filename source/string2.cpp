@@ -3,6 +3,8 @@
 
 #include <cstdarg>
 
+INTERNAL String convert_signed_to_string(u8 *buffer, s32 buffer_size, s64 signed_number, s32 base = 10, b32 uppercase = false, b32 keep_sign = false);
+
 struct CharResult {
     u8  character;
     b32 empty;
@@ -457,8 +459,8 @@ INTERNAL void reset(StringBuilder *builder) {
     builder->total_size = 0;
 }
 
-INTERNAL void append(StringBuilder *builder, u8 c) {
-    if (builder->allocator.allocate == 0) builder->allocator = get_toolbox()->default_allocator;
+INTERNAL void append(StringBuilder *builder, u8 c, Allocator alloc = default_allocator()) {
+    if (builder->allocator.allocate == 0) builder->allocator = alloc;
 
     if (builder->current == 0) builder->current = &builder->first;
 
@@ -604,7 +606,7 @@ INTERNAL void destroy(StringBuilder *builder) {
     }
 }
 
-INTERNAL String to_allocated_string(StringBuilder *builder, Allocator alloc) {
+INTERNAL String to_allocated_string(StringBuilder *builder, Allocator alloc = default_allocator()) {
     String result = allocate_string(alloc, builder->total_size);
 
     s64 size = 0;

@@ -82,38 +82,35 @@ INTERNAL void *cstd_alloc_func(void *, s64 size, void *old, s64 old_size) {
 Allocator CstdAllocator = {cstd_alloc_func, 0};
 
 
+INTERNAL Allocator   DefaultAllocator;
+INTERNAL MemoryArena TemporaryStorage;
+
 // TODO: Remove the toolbox stuff and return back to per function allocators.
-ApplicationToolbox PlatformToolbox;
-
-ApplicationToolbox *get_toolbox() {
-    return &PlatformToolbox;
-}
-
 Allocator default_allocator() {
-    return PlatformToolbox.default_allocator;
+    return DefaultAllocator;
 }
 
 Allocator change_default_allocator(Allocator alloc) {
-    Allocator old = PlatformToolbox.default_allocator;
-    PlatformToolbox.default_allocator = alloc;
+    Allocator old = DefaultAllocator;
+    DefaultAllocator = alloc;
 
     return old;
 }
 
 Allocator temporary_allocator() {
-    return make_arena_allocator(&PlatformToolbox.temporary_storage);
+    return make_arena_allocator(&TemporaryStorage);
 }
 
 s64 temporary_storage_mark() {
-    return PlatformToolbox.temporary_storage.used;
+    return TemporaryStorage.used;
 }
 
 void temporary_storage_rewind(s64 mark) {
-    PlatformToolbox.temporary_storage.used = mark;
+    TemporaryStorage.used = mark;
 }
 
 void reset_temporary_storage() {
-    PlatformToolbox.temporary_storage.used = 0;
+    TemporaryStorage.used = 0;
 }
 
 PlatformConsole Console;
@@ -129,13 +126,13 @@ int main_main() {
 #ifdef USE_RPMALLOC
     rpmalloc_initialize();
     DEFER(rpmalloc_finalize());
-    PlatformToolbox.default_allocator = RpmallocAllocator;
+    DefaultAllocator = RpmallocAllocator;
 #else
-    PlatformToolbox.default_allocator = CstdAllocator;
+    DefaultAllocator = CstdAllocator;
 #endif // USE_RPMALLOC
 
-    PlatformToolbox.temporary_storage = allocate_arena(KILOBYTES(32));
-    DEFER(destroy(&PlatformToolbox.temporary_storage));
+    TemporaryStorage = allocate_arena(KILOBYTES(32));
+    DEFER(destroy(&TemporaryStorage));
 
     Console.out.handle = GetStdHandle(STD_OUTPUT_HANDLE);
     Console.out.write_buffer = allocate_memory_buffer(default_allocator(), PLATFORM_CONSOLE_BUFFER_SIZE);
@@ -461,7 +458,7 @@ Array<String> platform_directory_listing(String path) {
     if (handle == INVALID_HANDLE_VALUE) return listing;
 
 
-    Allocator alloc = get_toolbox()->default_allocator;
+    Allocator alloc = default_allocator();
     append(listing, to_utf8(alloc, {(u16*)data.cFileName, (s64)wcslen(data.cFileName)}));
 
     while (FindNextFileW(handle, &data)) {

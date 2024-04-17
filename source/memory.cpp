@@ -1,8 +1,3 @@
-#pragma once
-
-#include "bricks.h"
-
-
 INTERNAL void *allocate(Allocator allocator, s64 bytes) {
     return allocator.allocate(allocator.data, bytes, 0, 0);
 }
@@ -15,12 +10,16 @@ INTERNAL void deallocate(Allocator allocator, void *ptr, s64 old_size) {
     allocator.allocate(allocator.data, 0, ptr, old_size);
 }
 
+#define ALLOC(alloc, type, count)  (type*)allocate((alloc), count * sizeof(type))
+#define REALLOC(alloc, ptr, old_count, new_count) (decltype(ptr))reallocate((alloc), new_count * sizeof(*ptr), ptr, old_count * sizeof(*ptr))
+#define DEALLOC(alloc, ptr, count) deallocate((alloc), ptr, count * sizeof(*ptr))
 
 INTERNAL void zero_memory(void *data, s64 size) {
     u8 *ptr = (u8*)data;
 
     for (s64 i = 0; i < size; i += 1) ptr[i] = 0;
 }
+#define INIT_STRUCT(ptr) zero_memory(ptr, sizeof(*ptr))
 
 INTERNAL void copy_memory(void *dest, void const *src, s64 size) {
     u8 *d = (u8*)dest;
@@ -46,7 +45,7 @@ INTERNAL bool memory_is_equal(void const *lhs, void const *rhs, u64 size) {
 
 INTERNAL MemoryArena allocate_arena(s64 size) {
     MemoryArena arena = {};
-    arena.allocator  = default_allocator();
+    arena.allocator = default_allocator();
     arena.memory = ALLOC(arena.allocator, u8, size);
     arena.used   = 0;
     arena.alloc  = size;
@@ -120,27 +119,26 @@ INTERNAL Allocator make_arena_allocator(MemoryArena *arena) {
     return {(AllocatorFunc*)allocate_from_arena, arena};
 }
 
-#define ALLOCATE(arena, type, count) (type*)allocate_from_arena((arena), sizeof(type) * (count), 0, 0)
-
 template<typename Type>
-INTERNAL Array<Type> allocate_array(s64 size) {
+INTERNAL Array<Type> allocate_array(s64 size, Allocator alloc = default_allocator()) {
     Array<Type> array = {};
-    array.memory = ALLOC(get_toolbox()->default_allocator, Type, size);
+    array.memory = ALLOC(alloc, Type, size);
     array.size   = size;
 
     return array;
 }
+#define ALLOCATE_ARRAY(type, size) allocate_array<type>(size)
 
 template<typename Type>
-INTERNAL void destroy_array(Array<Type> *array) {
-    DEALLOC(get_toolbox()->default_allocator, array->memory, array->size);
+INTERNAL void destroy_array(Array<Type> *array, Allocator alloc = default_allocator()) {
+    DEALLOC(alloc, array->memory, array->size);
 
     INIT_STRUCT(array);
 }
 
 template<typename Type>
 INTERNAL void prealloc(Array<Type> &array, s64 size, Allocator alloc) {
-    Type *memory = (Type*)allocate(alloc, size * sizeof(Type));
+    Type *memory = ALLOC(alloc, Type, size);
     copy_memory(memory, array.memory, array.size);
 
     array.memory = memory;
@@ -149,7 +147,7 @@ INTERNAL void prealloc(Array<Type> &array, s64 size, Allocator alloc) {
 
 template<typename Type>
 INTERNAL void prealloc(DArray<Type> &array, MemoryArena *arena, s64 size) {
-    Type *memory = ALLOCATE(arena, Type, size);
+    Type *memory = ALLOC(arena, Type, size);
     copy_memory(memory, array.memory, array.size);
 
     array.memory = memory;
@@ -157,12 +155,17 @@ INTERNAL void prealloc(DArray<Type> &array, MemoryArena *arena, s64 size) {
 }
 
 template<typename Type>
-INTERNAL void init(DArray<Type> &array, s64 size) {
-    array.allocator = get_toolbox()->default_allocator;
+INTERNAL void init(DArray<Type> &array, s64 size, Allocator alloc = default_allocator()) {
+    if (array.alloc) {
+        assert(array.allocator.allocate);
 
-    array.memory = (Type*)allocate(array.allocator, size * sizeof(Type));
+        DEALLOC(array.allocator, array.memory, array.alloc);
+    }
+
+    array.memory = ALLOC(alloc, Type, size);
     array.size   = 0;
     array.alloc  = size;
+    array.allocator = alloc;
 }
 
 template<typename Type>
@@ -179,8 +182,8 @@ INTERNAL Type *last(DArray<Type> &array) {
 }
 
 template<typename Type>
-INTERNAL Type *append(DArray<Type> &array, Type element) {
-    if (array.allocator.allocate == 0) array.allocator = get_toolbox()->default_allocator;
+INTERNAL Type *append(DArray<Type> &array, Type element, Allocator alloc = default_allocator()) {
+    if (array.allocator.allocate == 0) array.allocator = alloc;
 
     if (array.alloc == 0) {
         u32 const default_size = 4;
@@ -209,10 +212,10 @@ INTERNAL Type *append_unique(DArray<Type> &array, Type element) {
 
 
 template<typename Type>
-INTERNAL Type *insert(DArray<Type> &array, s64 index, Type element) {
+INTERNAL Type *insert(DArray<Type> &array, s64 index, Type element, Allocator alloc = default_allocator()) {
 	BOUNDS_CHECK(0, array.size, index, "Array insertion out of bounds.");
 
-    if (array.allocator.allocate == 0) array.allocator = get_toolbox()->default_allocator;
+    if (array.allocator.allocate == 0) array.allocator = alloc;
 
     if (array.alloc == 0) {
         u32 const default_size = 4;
@@ -232,8 +235,8 @@ INTERNAL Type *insert(DArray<Type> &array, s64 index, Type element) {
 }
 
 template<typename Type>
-INTERNAL void append(DArray<Type> &array, Type *elements, s64 count) {
-    if (array.allocator.allocate == 0) array.allocator = get_toolbox()->default_allocator;
+INTERNAL void append(DArray<Type> &array, Type *elements, s64 count, Allocator alloc = default_allocator()) {
+    if (array.allocator.allocate == 0) array.allocator = default_allocator();
 
     s64 space = array.alloc - array.size;
     if (space < count) {
@@ -254,15 +257,5 @@ INTERNAL void destroy(DArray<Type> &array) {
     array.memory = 0;
     array.size   = 0;
     array.alloc  = 0;
-}
-
-
-INTERNAL MemoryBuffer allocate_buffer(MemoryArena *arena, s64 size) {
-    MemoryBuffer buffer = {};
-    buffer.memory = (u8*)ALLOCATE(arena, u8, size);
-    buffer.used   = 0;
-    buffer.alloc  = size;
-
-    return buffer;
 }
 

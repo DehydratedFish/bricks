@@ -74,7 +74,7 @@ INTERNAL String convert_signed_to_string(u8 *buffer, s32 buffer_size, s64 signed
     return result;
 }
 
-INTERNAL String convert_unsigned_to_string(u8 *buffer, s32 buffer_size, u64 number, s32 base, b32 uppercase) {
+INTERNAL String convert_unsigned_to_string(u8 *buffer, s32 buffer_size, u64 number, s32 base = 10, b32 uppercase = false) {
     assert(buffer_size >= 20);
 
     u8 *ptr = buffer + buffer_size;

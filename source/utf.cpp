@@ -133,7 +133,7 @@ INTERNAL UTF8GetResult get_utf8(String *string) {
  * Note: Helpful stackoverflow question
  * https://stackoverflow.com/questions/73758747/looking-for-the-description-of-the-algorithm-to-convert-utf8-to-utf16
  */
-String16 to_utf16(Allocator alloc, String string, b32 add_null_terminator) {
+String16 to_utf16(Allocator alloc, String string, b32 add_null_terminator = false) {
     if (string.size == 0) return {};
 
     DArray<u16> buffer = {};
@@ -177,15 +177,6 @@ String16 to_utf16(Allocator alloc, String string, b32 add_null_terminator) {
     return {buffer.memory, buffer.size};
 }
 
-UTF8Iterator make_utf8_it(String string) {
-    UTF8Iterator it = {};
-    it.string = string;
-    next(&it);
-    it.index = 0;
-
-    return it;
-}
-
 void next(UTF8Iterator *it) {
     assert(it);
 
@@ -207,6 +198,15 @@ void next(UTF8Iterator *it) {
     }
     it->index += c.size;
     it->valid = true;
+}
+
+UTF8Iterator make_utf8_it(String string) {
+    UTF8Iterator it = {};
+    it.string = string;
+    next(&it);
+    it.index = 0;
+
+    return it;
 }
 
 UTF8CharResult utf8_peek(String str) {
