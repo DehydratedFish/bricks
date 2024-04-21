@@ -139,7 +139,7 @@ INTERNAL String trim(String str) {
         num_whitespaces += 1;
     }
     str.data += num_whitespaces;
-    str.size += num_whitespaces;
+    str.size -= num_whitespaces;
 
     num_whitespaces = 0;
     for (s64 i = str.size; i > 0; i -= 1) {

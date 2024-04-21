@@ -453,3 +453,15 @@ void log_to_file(struct PlatformFile *file) {
     LogFile = file;
 }
 
+enum {
+    READ_ENTIRE_FILE_OK,
+    READ_ENTIRE_FILE_NOT_FOUND,
+    READ_ENTIRE_FILE_READ_ERROR,
+};
+struct ReadEntireFileResult {
+    s32 status;
+    String content;
+};
+
+ReadEntireFileResult read_entire_file(String file);
+

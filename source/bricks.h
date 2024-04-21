@@ -23,6 +23,18 @@ struct TargetPlatformInfo {
     String shared_lib;
 };
 
+
+struct BrickyardEntry {
+    String name;
+    String path;
+};
+struct Brickyard {
+    DArray<BrickyardEntry> entries;
+    String content;
+    b32 loaded;
+};
+
+
 struct ApplicationState {
     // TODO: make a block based arena that can grow in size
     MemoryArena string_storage;
@@ -32,10 +44,10 @@ struct ApplicationState {
     String build_files_directory;
 
     String config_directory;
-    String brickyard_directory;
+    String brickyard_file;
+    Brickyard brickyard;
 
     String blueprint_file;
-    String cache_file;
 
     PlatformKind target_platform;
     TargetPlatformInfo target_info;
@@ -114,5 +126,10 @@ struct Blueprint {
     DArray<Blueprint> blueprints;
 
     bool valid;
+};
+
+enum LoadResult {
+    LOAD_OK,
+    LOAD_PARSE_ERROR,
 };
 

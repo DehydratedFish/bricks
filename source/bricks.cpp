@@ -451,6 +451,7 @@ INTERNAL b32 process_cache_file() {
 }
 */
 
+
 s32 application_main(Array<String> args) {
     App.string_storage = allocate_arena(MEGABYTES(4));
     App.string_alloc   = {(AllocatorFunc*)allocate_from_arena, &App.string_storage};
@@ -464,11 +465,10 @@ s32 application_main(Array<String> args) {
     }
 
     App.starting_directory    = allocate_string(App.string_alloc, platform_current_working_directory());
-    App.build_files_directory = format(App.string_alloc, "%S/.bricks",   App.starting_directory);
-    App.config_directory      = format(App.string_alloc, "%S/bricks",    app_data_dir);
-    App.brickyard_directory   = format(App.string_alloc, "%S/brickyard", App.config_directory);
-    App.blueprint_file        = format(App.string_alloc, "%S/blueprint", App.starting_directory);
-    App.cache_file            = format(App.string_alloc, "%S/blueprint.cache", App.build_files_directory);
+    App.build_files_directory = format(App.string_alloc, "%S/.bricks",    App.starting_directory);
+    App.config_directory      = format(App.string_alloc, "%S/bricks",     app_data_dir);
+    App.blueprint_file        = format(App.string_alloc, "%S/blueprint",  App.starting_directory);
+    App.brickyard_file        = format(App.string_alloc, "%S/brick.yard", App.config_directory);
 
     platform_create_directory(App.build_files_directory);
 
@@ -481,16 +481,32 @@ s32 application_main(Array<String> args) {
     ApplicationMode mode = process_arguments(args);
 
     if (mode == APP_MODE_REGISTER) {
-        String name = last_directory(App.starting_directory);
-        String path = t_format("%S/%S", App.brickyard_directory, name);
-        if (!platform_create_symlink(path, App.starting_directory)) {
-            print("Could not create symlink %S\n", path);
+        String register_name = last_directory(App.starting_directory);
 
-            return -1;
+        if (!App.brickyard.loaded) {
+            LoadResult load_result = load_brickyard(&App);
         }
 
-        //TODO: check if package exists and ask for override
-        print("Created Brick %S\n", name);
+        FOR (App.brickyard.entries, entry) {
+            if (entry->name == register_name) {
+                print("Blueprint %S already registered.\n", register_name);
+
+                return -1;
+            }
+        }
+
+        append(App.brickyard.entries, {register_name, App.starting_directory});
+
+        platform_delete_file_or_directory(App.brickyard_file);
+        PlatformFile file = platform_create_file_handle(App.brickyard_file, PLATFORM_FILE_WRITE);
+
+        FOR (App.brickyard.entries, entry) {
+            format(&file, "%S {%S}\n", entry->name, entry->path);
+        }
+
+        platform_close_file_handle(&file);
+        
+        print("Created Brick %S.\n", register_name);
 
         return 0;
     }

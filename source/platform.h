@@ -30,14 +30,6 @@ void platform_delete_file_or_directory(String path);
 b32 platform_create_symlink(String link, String path);
 String platform_get_full_path(String file);
 
-enum {
-    READ_ENTIRE_FILE_OK,
-    READ_ENTIRE_FILE_NOT_FOUND,
-    READ_ENTIRE_FILE_READ_ERROR,
-};
-String read_entire_file(String file, u32 *status = 0);
-
-
 
 struct PlatformConsole {
     PlatformFile out;

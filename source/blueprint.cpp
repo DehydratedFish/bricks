@@ -693,6 +693,78 @@ INTERNAL bool parse_sheet_declaration(Parser *parser, Blueprint *blueprint, Shee
 
 Blueprint parse_blueprint_file(String file);
 
+
+// TODO: Assumes a correct brick.yard file.
+INTERNAL BrickyardEntry make_entry(String str) {
+    BrickyardEntry entry = {};
+
+    s64 pos = 0;
+    entry.name.data = str.data;
+    for (; pos < str.size; pos += 1) {
+        if (str[pos] == '{') break;
+
+        entry.name.size += 1;
+    }
+
+    pos += 1;
+    entry.path.data = str.data + pos;
+    for(; pos < str.size; pos += 1) {
+        if (str[pos] == '}') break;
+
+        entry.path.size += 1;
+    }
+
+    entry.name = trim(entry.name);
+    entry.path = trim(entry.path);
+
+    return entry;
+}
+
+INTERNAL LoadResult load_brickyard(ApplicationState *state) {
+    if (state->brickyard.loaded) return LOAD_OK;
+
+    ReadEntireFileResult read_result = read_entire_file(App.brickyard_file);
+    if (read_result.status != READ_ENTIRE_FILE_OK) {
+        if (read_result.status == READ_ENTIRE_FILE_NOT_FOUND) {
+            return LOAD_OK;
+        } else if (read_result.status == READ_ENTIRE_FILE_READ_ERROR) {
+            print("Error reading blueprint file %S\n", App.brickyard_file);
+
+            return LOAD_PARSE_ERROR;
+        }
+    }
+
+    Array<String> lines = split_by_line_ending(read_result.content, default_allocator());
+    DEFER(destroy_array(&lines));
+    FOR (lines, line) {
+        if (line->size == 0) continue;
+
+        append(state->brickyard.entries, make_entry(*line));
+    }
+
+
+    return LOAD_OK;
+}
+
+INTERNAL String find_in_brickyard(String name, String version = {}) {
+    if (!App.brickyard.loaded) {
+        LoadResult load_result = load_brickyard(&App);
+        if (load_result != LOAD_OK) {
+            print("Could not load brickyard while looking for %S.\n", name);
+
+            return {};
+        }
+    }
+
+    FOR (App.brickyard.entries, entry) {
+        if (entry->name == name) {
+            return entry->path;
+        }
+    }
+
+    return {};
+}
+
 INTERNAL bool parse_blueprint_declaration(Parser *parser, Blueprint *blueprint) {
     advance_token(parser);
 
@@ -701,7 +773,14 @@ INTERNAL bool parse_blueprint_declaration(Parser *parser, Blueprint *blueprint) 
 
     String name = parser->previous_token.content;
 
-    String file = t_format("%S/%S/blueprint", App.brickyard_directory, parser->previous_token.content);
+    String path = find_in_brickyard(parser->previous_token.content);
+    if (path == "") {
+        parse_error(parser, parser->previous_token.loc, t_format("Could not find %S in Brickyard.", parser->previous_token.content));
+        
+        return false;
+    }
+
+    String file = t_format("%S/blueprint", path);
     Blueprint bp = parse_blueprint_file(file);
     bp.name = name;
 
@@ -746,12 +825,18 @@ INTERNAL bool parse_statement(Parser *parser, Blueprint *blueprint) {
 INTERNAL Blueprint parse_blueprint_file(String file) {
     Blueprint blueprint = default_config();
 
-    blueprint.source = read_entire_file(file);
-    if (blueprint.source.size == 0) {
-        print("No blueprint file available or file is empty. Attempted to open file %S\n", file);
+    ReadEntireFileResult read_result = read_entire_file(file);
+    if (read_result.status != READ_ENTIRE_FILE_OK) {
+        if (read_result.status == READ_ENTIRE_FILE_NOT_FOUND) {
+            print("Blueprint not found. Attempted to open file %S\n", file);
+        } else if (read_result.status == READ_ENTIRE_FILE_READ_ERROR) {
+            print("Error reading blueprint file %S\n", file);
+        }
 
         return blueprint;
     }
+
+    blueprint.source = read_result.content;
 
     blueprint.file = allocate_string(App.string_alloc, platform_get_full_path(file));
     blueprint.path = path_without_filename(blueprint.file);

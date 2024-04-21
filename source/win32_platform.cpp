@@ -398,41 +398,43 @@ String platform_get_full_path(String file) {
     return to_utf8(temporary_allocator(), full);
 }
 
-String read_entire_file(String file, u32 *status) {
+ReadEntireFileResult read_entire_file(String file) {
+    ReadEntireFileResult result = {};
+
     String16 wide_file = to_utf16(temporary_allocator(), file, true);
 
     HANDLE handle = CreateFileW((wchar_t*)wide_file.data, GENERIC_READ, 0, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
     if (handle == INVALID_HANDLE_VALUE) {
-        if (status) *status = READ_ENTIRE_FILE_NOT_FOUND;
+        result.status = READ_ENTIRE_FILE_NOT_FOUND;
 
-        return {};
+        return result;
     }
     DEFER(CloseHandle(handle));
 
     LARGE_INTEGER size;
     GetFileSizeEx(handle, &size);
 
-    String result = {};
+    String content = {};
 
     if (size.QuadPart) {
-        result = allocate_string(size.QuadPart);
+        content = allocate_string(size.QuadPart);
 
         s64 total = 0;
-        while (total != result.size) {
+        while (total != content.size) {
             DWORD bytes_read = 0;
 
-            if (!ReadFile(handle, result.data + total, size.QuadPart, &bytes_read, 0)) {
-                if (status) *status = READ_ENTIRE_FILE_READ_ERROR;
+            if (!ReadFile(handle, content.data + total, size.QuadPart, &bytes_read, 0)) {
+                result.status = READ_ENTIRE_FILE_READ_ERROR;
+                destroy_string(&content);
 
-                destroy_string(&result);
-                return {};
+                return result;
             }
 
             total += bytes_read;
             size.QuadPart -= bytes_read;
         }
     }
-    if (status) *status = READ_ENTIRE_FILE_OK;
+    result.content = content;
 
     return result;
 }
