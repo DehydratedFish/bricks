@@ -1,5 +1,9 @@
 #include "bricks.h"
+
+#include "blueprint.h"
 #include "platform.h"
+#include "string_builder.h"
+#include "io.h"
 
 
 extern ApplicationState App;
@@ -10,7 +14,7 @@ struct SourceLocation {
     s32 column;
 };
 
-enum {
+enum TokenKind {
     TOKEN_END_OF_INPUT,
     TOKEN_IDENTIFIER,
     TOKEN_STRING,
@@ -39,14 +43,17 @@ enum {
     TOKEN_KEYWORD_EXECUTABLE,
     TOKEN_KEYWORD_BRICK,
     TOKEN_KEYWORD_LIBRARY,
-    TOKEN_KEYWORD_BLUEPRINT,
+    TOKEN_KEYWORD_IMPORT,
+    TOKEN_KEYWORD_AS,
+
+    TOKEN_MISSING_QUOTE,
 
     TOKEN_UNKNOWN,
 
     TOKEN_COUNT
 };
 struct Token {
-    u32 kind;
+    TokenKind kind;
     SourceLocation loc;
 
     String content;
@@ -63,6 +70,8 @@ struct Parser {
 
     bool has_peek;
     Token peek_token;
+
+    Blueprint *bp;
 };
 
 enum {
@@ -155,16 +164,38 @@ INTERNAL String find_line(SourceLocation loc, String source) {
     return String(line_begin, length);
 }
 
-INTERNAL void parse_error(Parser *parser, SourceLocation loc, String message) {
-    String line = find_line(loc, parser->source_code);
-    print("Error in blueprint file %S: %d:%d: %S\n", parser->current_file, loc.line, loc.column, message);
-    print("%S\n", line);
+INTERNAL s32 trim_indentation(String *line) {
+    s32 removed = 0;
 
-    // TODO: proper tab handling
-    for (s32 i = 1; i < loc.column; i += 1) {
-        print(" ");
+    for (s64 i = 0; i < line->size; i += 1) {
+        if (line->data[i] != ' ' && line->data[i] != '\t') break;
+
+        removed += 1;
     }
-    print("^\n\n");
+
+    *line = shrink_front(*line, removed);
+
+    return removed;
+}
+
+INTERNAL void parse_error(Parser *parser, SourceLocation loc, String message) {
+    String line    = find_line(loc, parser->source_code);
+    s32 line_start = trim_indentation(&line);
+    s32 spaces = loc.column - line_start - 1;
+
+    StringBuilder builder = {};
+    DEFER(destroy(&builder));
+
+    format(&builder, "Error in blueprint file %S: %d:%d: %S\n", parser->current_file, loc.line, loc.column, message);
+    format(&builder, "%S\n", line);
+
+    for (s32 i = 0; i < spaces; i += 1) {
+        append(&builder, " ");
+    }
+    append(&builder, "^");
+
+    add_diagnostic(DIAG_ERROR, to_allocated_string(&builder, App.string_alloc));
+    parser->bp->status = BLUEPRINT_ERROR;
 }
 
 INTERNAL Token parse_identifier(Parser *parser) {
@@ -190,10 +221,12 @@ INTERNAL Token parse_identifier(Parser *parser) {
         {mark, size}
     };
 
-    if      (equal(token.content, "Executable")) token.kind = TOKEN_KEYWORD_EXECUTABLE;
-    else if (equal(token.content, "Brick"))      token.kind = TOKEN_KEYWORD_BRICK;
-    else if (equal(token.content, "Library"))    token.kind = TOKEN_KEYWORD_LIBRARY;
-    else if (equal(token.content, "Blueprint"))  token.kind = TOKEN_KEYWORD_BLUEPRINT;
+    if      (token.content == "executable") token.kind = TOKEN_KEYWORD_EXECUTABLE;
+    else if (token.content == "brick")      token.kind = TOKEN_KEYWORD_BRICK;
+    else if (token.content == "library")    token.kind = TOKEN_KEYWORD_LIBRARY;
+    // TODO: Do something like a global import. So the blueprint will always be loaded from the brickyard.
+    else if (token.content == "import")     token.kind = TOKEN_KEYWORD_IMPORT;
+    else if (token.content == "as")         token.kind = TOKEN_KEYWORD_AS;
 
     return token;
 }
@@ -225,17 +258,18 @@ INTERNAL Token parse_number(Parser *parser) {
 }
 
 
-// TODO: this is not right in cases of missing "
+// TODO: This is not right in cases of a missing ".
 INTERNAL Token parse_string(Parser *parser) {
     SourceLocation location = parser->loc;
 
     u8 *mark = parser->source_code.data;
+    TokenKind kind = TOKEN_STRING;
     s64 size = 0;
 
     u8 c;
     do {
         if (!get_char(parser, &c)) {
-            parse_error(parser, location, "Missing \" in string.");
+            kind = TOKEN_MISSING_QUOTE;
             break;
         }
 
@@ -245,7 +279,7 @@ INTERNAL Token parse_string(Parser *parser) {
     size -= 1;
 
     Token token = {
-        TOKEN_STRING,
+        kind,
         location,
         {mark, size}
     };
@@ -284,15 +318,21 @@ INTERNAL Token parse_control(Parser *parser) {
         }
         token.kind = TOKEN_COLON;
     } break;
-    case '"': { token = parse_string(parser); } break;
+    case '"': {
+        token = parse_string(parser); 
+        if (token.kind == TOKEN_MISSING_QUOTE) {
+            parse_error(parser, token.loc, "Missing .");
+        }
+    } break;
 
     case ';': { token.kind = TOKEN_SEMICOLON; } break;
     case '*': { token.kind = TOKEN_ASTERISK;  } break;
     case '/': {
         if (match_char(parser, '/')) {
             skip_comment(parser);
+
+            // TODO: This leads to a lot of recursion on multiple comments.
             return next_token(parser);
-            break;
         }
         token.kind = TOKEN_SLASH;
     } break;
@@ -309,7 +349,7 @@ INTERNAL Token parse_control(Parser *parser) {
     case ']': { token.kind = TOKEN_RIGHT_BRACKET; } break;
 
     default:
-              parse_error(parser, token.loc, "Unsupported character.");
+        parse_error(parser, token.loc, "Unsupported character.");
     }
 
     return token;
@@ -369,7 +409,7 @@ INTERNAL Token next_token(Parser *parser) {
         }
     }
 
-    Token token = {0};
+    Token token = {};
     token.kind = TOKEN_END_OF_INPUT;
     token.content.data = parser->source_code.data - 1;
     token.content.size = 0;
@@ -394,13 +434,14 @@ INTERNAL void advance_token(Parser *parser) {
     }
 }
 
-Parser init_parser(String source, String filename) {
-    Parser parser = {0};
+Parser init_parser(String source, Blueprint *blueprint) {
+    Parser parser = {};
+    parser.bp = blueprint;
 
     parser.source_code = source;
     assert(parser.source_code.size != 0);
 
-    parser.current_file = filename;
+    parser.current_file = blueprint->file;
 
     parser.loc.ptr = source.data;
     parser.loc.line = 1;
@@ -411,11 +452,11 @@ Parser init_parser(String source, String filename) {
     return parser;
 }
 
-INTERNAL bool current_token_is(Parser *parser, u32 kind) {
+INTERNAL bool current_token_is(Parser *parser, TokenKind kind) {
     return parser->current_token.kind == kind;
 }
 
-INTERNAL bool consume(Parser *parser, u32 kind, String error_msg) {
+INTERNAL bool consume(Parser *parser, TokenKind kind, String error_msg) {
     if (current_token_is(parser, kind)) {
         advance_token(parser);
         return true;
@@ -426,7 +467,7 @@ INTERNAL bool consume(Parser *parser, u32 kind, String error_msg) {
     return false;
 }
 
-INTERNAL bool match(Parser *parser, u32 kind) {
+INTERNAL bool match(Parser *parser, TokenKind kind) {
     if (current_token_is(parser, kind)) {
         advance_token(parser);
         return true;
@@ -436,448 +477,457 @@ INTERNAL bool match(Parser *parser, u32 kind) {
 
 
 
-INTERNAL Blueprint default_config() {
-    Blueprint blueprint = {};
+INTERNAL void default_config(Blueprint *blueprint) {
+    *blueprint = {};
 
 #ifdef OS_WINDOWS
-    blueprint.compiler = "msvc";
-    blueprint.linker   = "msvc";
+    blueprint->compiler = "msvc";
+    blueprint->linker   = "msvc";
 #endif
 
-    blueprint.build_dir = "build";
-
-    return blueprint;
+    blueprint->build_type = App.build_type;
 }
 
 
-void free_sheet(Sheet *sheet);
-
-INTERNAL bool parse_declaration(Parser *parser, Blueprint *blueprint) {
-    if (!consume(parser, TOKEN_IDENTIFIER, "Missing field name.")) return false;
+INTERNAL void parse_declaration(Parser *parser, Blueprint *blueprint) {
+    if (!consume(parser, TOKEN_IDENTIFIER, "Missing field name.")) return;
     Token field = parser->previous_token;
 
-    if (!consume(parser, TOKEN_COLON, "Missing : in field declaration.")) return false;
+    if (!consume(parser, TOKEN_COLON, "Missing : in field declaration.")) return;
 
-    if (equal(field.content, "Compiler")) {
-        if (!consume(parser, TOKEN_STRING, "Expected string in Compiler field.")) return false;
+    if (equal(field.content, "compiler")) {
+        if (!consume(parser, TOKEN_STRING, "Expected string in compiler field.")) return;
         blueprint->compiler = parser->previous_token.content;
-    } else if (equal(field.content, "Linker")) {
-        if (!consume(parser, TOKEN_STRING, "Expected string in Linker field.")) return false;
+    } else if (equal(field.content, "linker")) {
+        if (!consume(parser, TOKEN_STRING, "Expected string in linker field.")) return;
         blueprint->linker = parser->previous_token.content;
-    } else if (equal(field.content, "BuildDir")) {
-        if (!consume(parser, TOKEN_STRING, "Expected string in BuildDir field.")) return false;
-        blueprint->build_dir = parser->previous_token.content;
+    } else if (equal(field.content, "build_folder")) {
+        if (!consume(parser, TOKEN_STRING, "Expected string in build_folder field.")) return;
+        blueprint->build_folder = parser->previous_token.content;
     } else {
         parse_error(parser, field.loc, "Unknown identifier.");
-        return false;
     }
 
-    if (!consume(parser, TOKEN_SEMICOLON, "Missing ; after declaration")) return false;
-
-    return true;
+    consume(parser, TOKEN_SEMICOLON, "Missing ; after declaration");
 }
 
-INTERNAL PlatformKind target_platform(String platform_string) {
-    if (platform_string == "win32") return TARGET_WIN32;
-
-    return TARGET_UNDEFINED;
-}
-
-INTERNAL bool parse_path_list(Parser *parser, String name, DArray<String> *value) {
-    String base_dir = path_without_filename(parser->current_file);
-    String sub_dir = {};
-
+INTERNAL String combine_file_path(String folder, String sub_folder, String name) {
     StringBuilder builder = {};
+    if (folder != "") {
+        folder = remove_trailing_slashes(folder);
 
-    do {
-        reset(&builder);
-
-        if (match(parser, TOKEN_STRING)) {
-            if (base_dir.size) append_format(&builder, "%S/", base_dir);
-            if (sub_dir.size)  append_format(&builder, "%S/", sub_dir);
-
-            append(&builder, parser->previous_token.content);
-            append(*value, to_allocated_string(&builder, App.string_alloc));
-        } else if (match(parser, TOKEN_SLASH)) {
-            if (!consume(parser, TOKEN_STRING, "Expected string after directory specifier (/).")) return false;
-            sub_dir = parser->previous_token.content;
-        } else if (match(parser, TOKEN_AT)) {
-            if (App.target_platform != target_platform(parser->current_token.content)) {
-                u32 kind;
-                do {
-                    advance_token(parser);
-                    kind = peek_token(parser).kind;
-                } while (kind != TOKEN_AT && kind != TOKEN_SEMICOLON && kind != TOKEN_END_OF_INPUT);
-            } else {
-                advance_token(parser);
-
-                continue;
-            }
-        } else {
-            parse_error(parser, parser->current_token.loc, format(App.string_alloc, "Expected string or / specifier in %S field.", name));
-            return false;
-        }
-    } while (match(parser, TOKEN_COMMA));
-
-    return true;
-}
-
-INTERNAL bool parse_string_list(Parser *parser, String name, DArray<String> *value) {
-    do {
-        if (!consume(parser, TOKEN_STRING, format(App.string_alloc, "Expected string in %S field.", name))) return false;
-
-        append(*value, parser->previous_token.content);
-    } while (match(parser, TOKEN_COMMA));
-
-    return true;
-}
-
-INTERNAL bool parse_string_field(Parser *parser, String name, String *value) {
-    if (!consume(parser, TOKEN_STRING, format(App.string_alloc, "Expected string in field %S.", name))) return false;
-    *value = parser->previous_token.content;
-
-    return true;
-}
-
-INTERNAL bool parse_dependency_list(Parser *parser, String name, DArray<Dependency> *deps, DArray<String> *libs) {
-    do {
-        Dependency dep = {};
-
-        if (match(parser, TOKEN_STRING)) {
-            append(*libs, parser->previous_token.content);
-
-            continue;
-        } else if (match(parser, TOKEN_IDENTIFIER)) {
-            dep.sheet = parser->previous_token.content;
-
-            if (match(parser, TOKEN_DOT)) {
-                if (!consume(parser, TOKEN_IDENTIFIER, "Expected identifier as element specifier.")) return false;
-                dep.module = dep.sheet;
-                dep.sheet = parser->previous_token.content;
-            }
-        } else if (match(parser, TOKEN_AT)) {
-            if (App.target_platform != target_platform(parser->current_token.content)) {
-                u32 kind;
-                do {
-                    advance_token(parser);
-                    kind = peek_token(parser).kind;
-                } while (kind != TOKEN_AT && kind != TOKEN_SEMICOLON && kind != TOKEN_END_OF_INPUT);
-            } else {
-                advance_token(parser);
-            }
-
-            continue;
-        } else {
-            parse_error(parser, parser->current_token.loc, format(App.string_alloc, "Expected either a string, identifier or @ specifier in dependency list %S.", name));
-            return false;
-        }
-
-        append(*deps, dep);
-    } while (match(parser, TOKEN_COMMA));
-
-    return true;
-}
-
-INTERNAL bool parse_sheet_field(Parser *parser, Sheet *sheet) {
-    if (!consume(parser, TOKEN_IDENTIFIER, "Missing field name.")) return false;
-    Token field = parser->previous_token;
-
-    if (match(parser, TOKEN_HASHTAG)) {
-        if (!consume(parser, TOKEN_STRING, "Here needs to be a string nameing the build type.")) return false;
-
-        if (parser->previous_token.content != App.build_type) {
-            while (parser->current_token.kind != TOKEN_SEMICOLON) {
-                advance_token(parser);
-            }
-
-            return true;
-        }
+        append(&builder, folder);
+        append(&builder, '/');
     }
 
-    if (!consume(parser, TOKEN_COLON, "Missing : in field.")) return false;
+    if (sub_folder != "") {
+        sub_folder = remove_leading_slashes(sub_folder);
+        sub_folder = remove_trailing_slashes(sub_folder);
 
-    if (sheet->kind == SHEET_BRICK) {
-        if      (field.content == "sources")      return parse_path_list(parser, "sources", &sheet->sources);
-        else if (field.content == "include_dirs") return parse_path_list(parser, "include_dirs", &sheet->include_dirs);
-        else if (field.content == "symbols")      return parse_string_list(parser, "symbols", &sheet->symbols);
-        else if (field.content == "dependencies") return parse_dependency_list(parser, "dependencies", &sheet->dependencies, &sheet->libraries);
-        else parse_error(parser, field.loc, format(App.string_alloc, "Unknown field %S.", field.content));
-    } else if (sheet->kind == SHEET_EXECUTABLE || sheet->kind == SHEET_LIBRARY) {
-        if      (field.content == "sources")      return parse_path_list(parser, "sources", &sheet->sources);
-        else if (field.content == "include_dirs") return parse_path_list(parser, "include_dirs", &sheet->include_dirs);
-        else if (field.content == "symbols")      return parse_string_list(parser, "symbols", &sheet->symbols);
-        else if (field.content == "dependencies") return parse_dependency_list(parser, "dependencies", &sheet->dependencies, &sheet->libraries);
-        else if (field.content == "compiler")     return parse_string_field(parser, "compiler", &sheet->compiler);
-        else if (field.content == "group")        return parse_string_field(parser, "group", &sheet->group);
-        else if (field.content == "build_dir")    return parse_string_field(parser, "build_dir", &sheet->build_dir);
-        else parse_error(parser, field.loc, format(App.string_alloc, "Unknown field %S.", field.content));
+        append(&builder, sub_folder);
+        append(&builder, '/');
     }
 
-    return false;
+    name = remove_leading_slashes(name);
+    append(&builder, name);
+    
+    return to_allocated_string(&builder, App.string_alloc);
 }
 
-INTERNAL String SheetKindLookup[SHEET_COUNT] = {
-    "<Errornous sheet kind>",
+INTERNAL String EntityKindLookup[ENTITY_COUNT] = {
+    "<NONE>",
     "Blueprint",
     "Brick",
     "Executable",
     "Library",
 };
 
-INTERNAL String enum_string(SheetKind kind) {
-    return SheetKindLookup[kind];
+INTERNAL String enum_string(EntityKind kind) {
+    return EntityKindLookup[kind];
 }
 
-INTERNAL bool parse_sheet_declaration(Parser *parser, Blueprint *blueprint, SheetKind kind) {
-    advance_token(parser);
+INTERNAL b32 parse_deps(Parser *parser, Entity *entity, b32 skip) {
+    b32 result = true;
 
-    Sheet sheet = {};
-    sheet.kind = kind;
-    sheet.compiler  = blueprint->compiler;
-    sheet.linker    = blueprint->linker;
-    sheet.build_dir = blueprint->build_dir;
-
-    if (!consume(parser, TOKEN_COLON, t_format("Missing : after %S.", enum_string(sheet.kind)))) return false;
-    if (!consume(parser, TOKEN_IDENTIFIER, t_format("Missing %S name.", enum_string(sheet.kind)))) return false;
-    sheet.name = parser->previous_token.content;
-
-    if (match(parser, TOKEN_LEFT_BRACE)) {
-        if (match(parser, TOKEN_RIGHT_BRACE)) {
-            parse_error(parser, parser->previous_token.loc, t_format("Empty %S not allowed.", enum_string(sheet.kind)));
-            free_sheet(&sheet);
-
-            return false;
-        }
-        do {
-            if (current_token_is(parser, TOKEN_RIGHT_BRACE)) break;
-            if (!parse_sheet_field(parser, &sheet)) {
-                free_sheet(&sheet);
-
-                return false;
+    do {
+        if (match(parser, TOKEN_IDENTIFIER)) {
+            Dependency dep = {};
+            dep.entity = parser->previous_token.content;
+            if (match(parser, TOKEN_DOT)) {
+                if (!consume(parser, TOKEN_IDENTIFIER, "Identifier needed after . in dependency.")) return false;
+                dep.module = dep.entity;
+                dep.entity = parser->previous_token.content;
             }
-        } while (match(parser, TOKEN_SEMICOLON));
+            if (skip) continue;
 
-        if (!consume(parser, TOKEN_RIGHT_BRACE, "Missing } in Executable declaration.")) {
-            free_sheet(&sheet);
+            if (dep.module != "") {
+                dep.module = allocate_string(dep.module, App.string_alloc);
+            }
+            dep.entity = allocate_string(dep.entity, App.string_alloc);
+            append(&entity->dependencies, dep);
+        } else if (match(parser, TOKEN_STRING)) {
+            append(&entity->libraries, allocate_string(parser->previous_token.content, App.string_alloc));
+        } else {
+            parse_error(parser, parser->current_token.loc, "Expected library string or entity identifier.");
+        }
+    } while (match(parser, TOKEN_COMMA));
 
+    return result;
+}
+
+INTERNAL b32 parse_symbols(Parser *parser, Entity *entity, b32 skip) {
+    b32 result = true;
+
+    do {
+        if (!consume(parser, TOKEN_STRING, "Expected string as symbol.")) result = false;
+
+        if (skip) continue;
+        append(&entity->symbols, allocate_string(parser->previous_token.content, App.string_alloc));
+    } while (match(parser, TOKEN_COMMA));
+
+    return result;
+}
+
+INTERNAL b32 parse_includes(Parser *parser, Entity *entity, b32 skip) {
+    b32 result = true;
+
+    do {
+        if (!consume(parser, TOKEN_STRING, "Expected string as include folder.")) result = false;
+        if (skip) continue;
+
+        String file = combine_file_path(parser->bp->path, "", parser->previous_token.content);
+        append(&entity->include_folders, file);
+    } while (match(parser, TOKEN_COMMA));
+
+    return result;
+}
+
+INTERNAL b32 parse_build_folder(Parser *parser, Entity *entity, b32 skip) {
+    b32 result = false;
+
+    if (consume(parser, TOKEN_STRING, "Missing build folder.")) {
+        if (!skip) {
+            entity->build_folder = allocate_string(parser->previous_token.content, App.string_alloc);
+        }
+        result = true;
+    }
+
+    return result;
+}
+
+INTERNAL b32 parse_sources(Parser *parser, Entity *entity, b32 skip) {
+    b32 result = false;
+
+    String sub_folder = "";
+    do {
+        if (match(parser, TOKEN_STRING)) {
+            if (skip) continue;
+
+            String file = combine_file_path(parser->bp->path, sub_folder, parser->previous_token.content);
+            append(&entity->sources, file);
+        } else if (match(parser, TOKEN_SLASH)) {
+            if (!consume(parser, TOKEN_STRING, "Expected sub folder string.")) return result;
+            sub_folder = parser->previous_token.content;
+        } else {
+            parse_error(parser, parser->current_token.loc, "Expexted source file.");
+        }
+    } while (match(parser, TOKEN_COMMA));
+
+    result = true;
+    return result;
+}
+
+INTERNAL b32 parse_field_spec(Parser *parser, Blueprint *bp) {
+    b32 skip_field = true;
+
+    if (match(parser, TOKEN_LEFT_PARENTHESIS)) {
+        if (match(parser, TOKEN_RIGHT_PARENTHESIS)) {
             return false;
         }
-    } else {
-        parse_error(parser, parser->current_token.loc, "Missing { in Executable declaration");
-        free_sheet(&sheet);
 
+        do {
+            if (match(parser, TOKEN_RIGHT_PARENTHESIS)) {
+                break;
+            } else if (match(parser, TOKEN_IDENTIFIER)) {
+                if (parser->previous_token.content == bp->build_type) skip_field = false;
+            } else if (match(parser, TOKEN_HASHTAG)) {
+                // TODO: Also allow strings?
+                if (!consume(parser, TOKEN_IDENTIFIER, "Expected platform specifier.")) return true;
+                if (parser->previous_token.content == App.target_platform) skip_field = false;
+            } else {
+                parse_error(parser, parser->current_token.loc, "Expected build type or platform specifier as field argument.");
+            }
+        } while (match(parser, TOKEN_COMMA));
+
+        match(parser, TOKEN_RIGHT_PARENTHESIS);
+    } else {
+        skip_field = false;
+    }
+
+    return skip_field;
+}
+
+INTERNAL b32 parse_field(Parser *parser, Entity *entity, Blueprint *bp) {
+    b32 result = false;
+    if (!consume(parser, TOKEN_IDENTIFIER, t_format("Unkown field %S.", parser->current_token.content))) {
+        return result;
+    }
+    
+    Token name_token = parser->previous_token;
+    String name = name_token.content;
+
+    b32 skip_field = parse_field_spec(parser, bp);
+
+    if (!consume(parser, TOKEN_COLON, "Missing : in field.")) return result;
+
+    if        (name == "sources") {
+        result = parse_sources(parser, entity, skip_field);
+    } else if (name == "folder") {
+        result = parse_build_folder(parser, entity, skip_field);
+    } else if (name == "include") {
+        result = parse_includes(parser, entity, skip_field);
+    } else if (name == "symbols") {
+        result = parse_symbols(parser, entity, skip_field);
+    } else if (name == "dependencies") {
+        result = parse_deps(parser, entity, skip_field);
+    } else {
+        parse_error(parser, name_token.loc, t_format("Unkown field %S.", name));
+    }
+
+    if (!result) return result;
+
+    // NOTE: No consume as the error message is not helpful. Still not quite right though.
+    if (!match(parser, TOKEN_SEMICOLON)) {
+        parse_error(parser, parser->previous_token.loc, "Missing ; .");
         return false;
     }
 
-    String extension;
-    if (kind == SHEET_EXECUTABLE) {
-        extension = App.target_info.exe;
-        sheet.full_path = format(App.string_alloc, "%S/%S/%S%S", blueprint->path, sheet.build_dir, sheet.name, extension);
-    } else if (kind == SHEET_LIBRARY) {
-        if (sheet.additional_info == SHEET_STATIC) {
-            extension = App.target_info.static_lib;
-        } else if (sheet.additional_info == SHEET_SHARED) {
-            extension = App.target_info.shared_lib;
-        } else {
-            die("Should not ne reachable.\n");
-        }
-        String file_with_extension = t_format("%S%S", sheet.name, extension);
-        sheet.full_path = format(App.string_alloc, "%S/%S/%S", App.build_files_directory, file_with_extension, file_with_extension);
-    }
-
-
-    append(blueprint->sheets, sheet);
-
-    return true;
+    return result;
 }
 
-Blueprint parse_blueprint_file(String file);
-
-
-// TODO: Assumes a correct brick.yard file.
-INTERNAL BrickyardEntry make_entry(String str) {
-    BrickyardEntry entry = {};
-
-    s64 pos = 0;
-    entry.name.data = str.data;
-    for (; pos < str.size; pos += 1) {
-        if (str[pos] == '{') break;
-
-        entry.name.size += 1;
+INTERNAL void parse_entity_declaration(Parser *parser, Blueprint *blueprint) {
+    EntityKind  kind     = ENTITY_NONE;
+    LibraryKind lib_kind = NO_LIBRARY;
+    if (current_token_is(parser, TOKEN_KEYWORD_EXECUTABLE)) {
+        kind = ENTITY_EXECUTABLE;
+    } else if (current_token_is(parser, TOKEN_KEYWORD_LIBRARY)) {
+        kind     = ENTITY_LIBRARY;
+        lib_kind = STATIC_LIBRARY;
+    } else if (current_token_is(parser, TOKEN_KEYWORD_BRICK)) {
+        kind = ENTITY_BRICK;
+    } else {
+        String msg = t_format("Unknown entity type %S.", parser->current_token.content);
+        parse_error(parser, parser->current_token.loc, msg);
     }
 
-    pos += 1;
-    entry.path.data = str.data + pos;
-    for(; pos < str.size; pos += 1) {
-        if (str[pos] == '}') break;
-
-        entry.path.size += 1;
+    Entity entity = {};
+    entity.kind = kind;
+    entity.lib_kind  = lib_kind;
+    entity.compiler  = blueprint->compiler;
+    entity.linker    = blueprint->linker;
+    
+    // NOTE: On static libraries the resulting lib should not necessarily be
+    //       in the build folder. Only put it there if the blueprint specifies it.
+    if (entity.kind != ENTITY_LIBRARY && entity.lib_kind != STATIC_LIBRARY) {
+        entity.build_folder = blueprint->build_folder;
     }
 
-    entry.name = trim(entry.name);
-    entry.path = trim(entry.path);
-
-    return entry;
-}
-
-INTERNAL LoadResult load_brickyard(ApplicationState *state) {
-    if (state->brickyard.loaded) return LOAD_OK;
-
-    ReadEntireFileResult read_result = read_entire_file(App.brickyard_file);
-    if (read_result.status != READ_ENTIRE_FILE_OK) {
-        if (read_result.status == READ_ENTIRE_FILE_NOT_FOUND) {
-            return LOAD_OK;
-        } else if (read_result.status == READ_ENTIRE_FILE_READ_ERROR) {
-            print("Error reading blueprint file %S\n", App.brickyard_file);
-
-            return LOAD_PARSE_ERROR;
-        }
-    }
-
-    Array<String> lines = split_by_line_ending(read_result.content, default_allocator());
-    DEFER(destroy_array(&lines));
-    FOR (lines, line) {
-        if (line->size == 0) continue;
-
-        append(state->brickyard.entries, make_entry(*line));
-    }
-
-
-    return LOAD_OK;
-}
-
-INTERNAL String find_in_brickyard(String name, String version = {}) {
-    if (!App.brickyard.loaded) {
-        LoadResult load_result = load_brickyard(&App);
-        if (load_result != LOAD_OK) {
-            print("Could not load brickyard while looking for %S.\n", name);
-
-            return {};
-        }
-    }
-
-    FOR (App.brickyard.entries, entry) {
-        if (entry->name == name) {
-            return entry->path;
-        }
-    }
-
-    return {};
-}
-
-INTERNAL bool parse_blueprint_declaration(Parser *parser, Blueprint *blueprint) {
     advance_token(parser);
 
-    if (!consume(parser, TOKEN_COLON, "Missing : in Blueprint declaration.")) return false;
-    if (!consume(parser, TOKEN_IDENTIFIER, "Blueprint declaration needs a name.")) return false;
+    if (!consume(parser, TOKEN_COLON, t_format("Missing : after %S.", enum_string(entity.kind)))) return;
+    if (!consume(parser, TOKEN_IDENTIFIER, t_format("Missing %S name.", enum_string(entity.kind)))) return;
+    entity.name = parser->previous_token.content;
 
-    String name = parser->previous_token.content;
-
-    String path = find_in_brickyard(parser->previous_token.content);
-    if (path == "") {
-        parse_error(parser, parser->previous_token.loc, t_format("Could not find %S in Brickyard.", parser->previous_token.content));
-        
-        return false;
+    if (!consume(parser, TOKEN_LEFT_BRACE, "Missing { in declaration.")) {
+        entity.status = ENTITY_STATUS_ERROR;
+        return;
     }
 
-    String file = t_format("%S/blueprint", path);
-    Blueprint bp = parse_blueprint_file(file);
-    bp.name = name;
+    do {
+        if (match(parser, TOKEN_RIGHT_BRACE)) break;
 
-    if (!consume(parser, TOKEN_SEMICOLON, "Missing ; in Bricks declaration.")) return false;
-    if (bp.valid) {
-        append(blueprint->blueprints, bp);
+        if (!parse_field(parser, &entity, blueprint)) {
+            return;
+        }
+    } while (parser->previous_token.kind == TOKEN_SEMICOLON || match(parser, TOKEN_RIGHT_BRACE));
 
-        return true;
-    }
-
-    return false;
+    append(&blueprint->entitys, entity);
 }
 
-INTERNAL bool parse_statement(Parser *parser, Blueprint *blueprint) {
+INTERNAL void parse_import(Parser *parser, Blueprint *blueprint) {
+    advance_token(parser);
+
+    if (current_token_is(parser, TOKEN_IDENTIFIER) || current_token_is(parser, TOKEN_STRING)) {
+        advance_token(parser);
+    } else {
+        parse_error(parser, parser->current_token.loc, "Import missing name or path.");
+        return;
+    }
+
+    Token name_token = parser->previous_token;
+
+    // TODO: Think of something to specifiy a version.
+    String version = {};
+
+    // TODO: Maybe support multiple groups?
+    String group = {};
+
+    if (match(parser, TOKEN_COLON)) {
+        if(!consume(parser, TOKEN_IDENTIFIER, "Missing group name.")) {
+            return;
+        }
+        group = parser->previous_token.content;
+    }
+
+    String name = {};
+    if (match(parser, TOKEN_KEYWORD_AS)) {
+        if (!consume(parser, TOKEN_IDENTIFIER, "Rename needs to be an identifier.")) return;
+
+        name = allocate_string(parser->previous_token.content, App.string_alloc);
+    } else {
+        name = allocate_string(name_token.content, App.string_alloc);
+    }
+
+    // NOTE: First looking for a sub directory with the import name.
+    String path = t_format("%S/blueprint", name_token.content);
+    if (!platform_file_exists(path)) {
+        path = find(&App.brickyard, name_token.content, version);
+        if (path == "") {
+            parse_error(parser, name_token.loc, t_format("Could not find %S in the Brickyard.", name_token.content));
+            return;
+        } else {
+            path = t_format("%S/blueprint", path);
+        }
+    }
+
+    if (!consume(parser, TOKEN_SEMICOLON, "Missing ; after import.")) return;
+
+    Blueprint import = {};
+    parse_blueprint_file(&import, path);
+    import.name = name;
+
+    if (import.status == BLUEPRINT_ERROR) {
+        destroy(&import);
+    } else {
+        append(&blueprint->imports, import);
+    }
+}
+
+INTERNAL void parse_statement(Parser *parser, Blueprint *blueprint) {
     switch (parser->current_token.kind) {
     case TOKEN_IDENTIFIER: {
-        return parse_declaration(parser, blueprint);
+        parse_declaration(parser, blueprint);
     } break;
 
-    case TOKEN_KEYWORD_EXECUTABLE: {
-        return parse_sheet_declaration(parser, blueprint, SHEET_EXECUTABLE);
-    } break;
-
-    case TOKEN_KEYWORD_BRICK: {
-        return parse_sheet_declaration(parser, blueprint, SHEET_BRICK);
-    } break;
-
+    case TOKEN_KEYWORD_EXECUTABLE:
+    case TOKEN_KEYWORD_BRICK:
     case TOKEN_KEYWORD_LIBRARY: {
-        return parse_sheet_declaration(parser, blueprint, SHEET_LIBRARY);
+        parse_entity_declaration(parser, blueprint);
     } break;
 
-    case TOKEN_KEYWORD_BLUEPRINT: {
-        return parse_blueprint_declaration(parser, blueprint);
+    case TOKEN_KEYWORD_IMPORT: {
+        parse_import(parser, blueprint);
     } break;
+
+    default:
+        parse_error(parser, parser->current_token.loc, "Expected statement.");
     }
-
-    parse_error(parser, parser->current_token.loc, "Expected statement.");
-
-    return false;
 }
 
-INTERNAL Blueprint parse_blueprint_file(String file) {
-    Blueprint blueprint = default_config();
+// TODO: Make this more usable/configurable for imports.
+void parse_blueprint_file(Blueprint *blueprint, String file) {
+    default_config(blueprint);
 
-    ReadEntireFileResult read_result = read_entire_file(file);
-    if (read_result.status != READ_ENTIRE_FILE_OK) {
-        if (read_result.status == READ_ENTIRE_FILE_NOT_FOUND) {
-            print("Blueprint not found. Attempted to open file %S\n", file);
-        } else if (read_result.status == READ_ENTIRE_FILE_READ_ERROR) {
-            print("Error reading blueprint file %S\n", file);
+    auto read_result = platform_read_entire_file(file);
+    if (read_result.error) {
+        String full = t_format("%S/%S", App.starting_folder, file);
+        if (read_result.error == PLATFORM_FILE_NOT_FOUND) {
+            add_diagnostic(DIAG_ERROR, t_format("File not found %S.", full));
+        } else {
+            add_diagnostic(DIAG_ERROR, t_format("Read error in file %S.", full));
         }
+        blueprint->status = BLUEPRINT_ERROR;
 
-        return blueprint;
+        return;
     }
 
-    blueprint.source = read_result.content;
+    blueprint->file = allocate_string(file, App.string_alloc);
+    blueprint->path = path_without_filename(blueprint->file);
 
-    blueprint.file = allocate_string(App.string_alloc, platform_get_full_path(file));
-    blueprint.path = path_without_filename(blueprint.file);
-
-    Parser parser = init_parser(blueprint.source, blueprint.file);
+    Parser parser = init_parser(read_result.content, blueprint);
 
     while (!current_token_is(&parser, TOKEN_END_OF_INPUT)) {
-        if (!parse_statement(&parser, &blueprint)) {
-            return blueprint;
-        }
-    }
-    blueprint.valid = true;
+        parse_statement(&parser, blueprint);
 
-    return blueprint;
+        if (blueprint->status == BLUEPRINT_ERROR) break;
+    }
 }
 
-void free_sheet(Sheet *sheet) {
-    destroy(sheet->sources);
-    destroy(sheet->include_dirs);
-    destroy(sheet->symbols);
-    destroy(sheet->libraries);
-    destroy(sheet->dependencies);
-    destroy(sheet->diagnostics);
+void destroy(Entity *entity) {
+    destroy(&entity->sources);
+    destroy(&entity->include_folders);
+    destroy(&entity->symbols);
+    destroy(&entity->libraries);
+    destroy(&entity->dependencies);
 
-    INIT_STRUCT(sheet);
+    INIT_STRUCT(entity);
 }
 
-void free_blueprint(Blueprint *blueprint) {
-    FOR (blueprint->sheets, sheet) {
-        free_sheet(sheet);
+void destroy(Blueprint *blueprint) {
+    FOR (blueprint->entitys, entity) {
+        destroy(entity);
     }
 
-    FOR (blueprint->blueprints, bp) {
-        free_blueprint(bp);
+    FOR (blueprint->imports, bp) {
+        destroy(bp);
     }
 
-    destroy(blueprint->sheets);
-    destroy(blueprint->blueprints);
-
-    destroy_string(&blueprint->source);
+    destroy(&blueprint->entitys);
+    destroy(&blueprint->imports);
 
     INIT_STRUCT(blueprint);
+}
+
+
+Blueprint *find_submodule(Blueprint *bp, String name) {
+    if (name != "") {
+        FOR (bp->imports, import) {
+            if (import->name == name) {
+                return import;
+            }
+        }
+
+        add_diagnostic(DIAG_ERROR, t_format("No imported blueprint %S.\n", name));
+        return 0;
+    }
+
+    return bp;
+}
+
+Entity *find_dependency(Blueprint *bp, String name) {
+    FOR (bp->entitys, entity) {
+        if (entity->name == name) {
+            return entity;
+        }
+    }
+
+    add_diagnostic(DIAG_ERROR, t_format("No entity %S in blueprint %S.\n", name, bp->name));
+    return 0;
+}
+
+void print_diagnostics(Entity *entity) {
+    FOR (entity->diagnostics, diag) {
+        print("%S\n", diag->message);
+    }
+}
+
+void add_diagnostic(Entity *entity, DiagnosticKind kind, String msg) {
+    Diagnostic diag = {};
+    diag.kind = kind;
+    diag.message = allocate_string(msg, App.string_alloc);
+
+    if (kind == DIAG_ERROR) entity->has_errors = true;
+    
+    append(&entity->diagnostics, diag);
 }
 

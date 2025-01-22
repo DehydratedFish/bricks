@@ -12,26 +12,32 @@ Blueprints are the files used to describe your stuff. Put a file called `bluepri
 Here is a basic example:
 
 ```
-BuildDir: "build"; // Setting the global directory where all built files will be placed
+// Imports first look for a matching subdirectory and after that in the brickyard.
+import "libraries/os" as os;
 
-Executable: app {                       // As the name implies an executable is declared.
-    build_dir: "build";                 // Changing the build dir only for this executable.
-    build_dir #"debug": "build/debug";  // With a # directly following a property it will only be processed
-                                        // with the matching build type (see Building).
 
-    include_dirs: "include";            // Adding directories for the compiler to look for header files.
+// Setting the global directory where all build files will be placed.
+build_folder: "build";
+
+executable: app {                       // As the name implies an executable is declared.
+    folder: "build/debug";              // Changing the build dir only for this executable.
+    folder(release): "build/release";   // Fields can specify for which build types they are
+                                        // included in paranthesis. The default is debug.
+
+    include: "include";                 // Adding include folders for the compiler.
     symbols: "USE_CUSTOM_ALLOCATOR";    // Adding #define symbols.
 
     sources: "source/main.cpp";         // Adding sources to be build.
     sources: /"source", "memory.cpp";   // A slash before a string adds a sub directory to all following files.
-    sources: @win32, "win32_stuff.cpp"; // An @ specifies an available platform identifier and only adds files on this platform.
-                                        // / and @ can be used multiple times in one line or split like above.
+    sources(#win32): "win32_stuff.cpp"; // Appending a # before the identifier in the parenthesis specifies
+                                        // the target platorm the field is included.
 
-    dependencies: @win32, "User32.lib", "Ole32.lib", "Dbghelp.lib"; // Needed libraries required for linking.
+    dependencies: os.core;              // Including a brick or library from another module.
+    dependencies(#win32): "Dbghelp.lib"; // Needed libraries for the linker.
 }
 ```
 
-Running Bricks will result in an executable `build/app` being compiled from the source file `main.cpp`. A custom #define is added and it looks for header files in a sub folder.
+Running Bricks will result in an executable `build/debug/app` being compiled from the source file `main.cpp`. A custom #define is added and it looks for header files in a sub folder.
 
 Quick and easy made build file in my eyes. There is some more fuctionality that makes the builds a little more dynamic. As in other build systems there is a way to make libraries(for the moment only static libraries) as well.
 
@@ -68,32 +74,11 @@ Executable: app {
 
 Now all declared files and symbols are added to app.
 
-## Includes
+## Brickyard (imports)
 
 If you run Bricks with the `register` command and you are in a folder containing a `blueprint` the folder will be added to the include list with it's name.  
-ATTENTION: I am lazy and just create a junktion to the folder inside the config of Bricks. Somehow this is only possible with admin privileges on windows.
 
-So if you have a `blueprint` in the folder `utiliy` and run `bricks register` you can now include it in other blueprints.
-
-```
-// utility/blueprint
-Brick: vector_math {
-    sources: "trigonometry.cpp";
-}
-
-Library: lib {
-    ...
-}
-```
-```
-// app/blueprint
-Blueprint: utility;
-
-Executable: app {
-    ...
-    dependencies: utility.vector_math, utility.lib;
-}
-```
+So if you have a `blueprint` in the folder `utiliy` and run `bricks register` it will be registered to the brickyard and can be imported in any blueprint.
 
 ## Building
 

@@ -1,2 +1,7 @@
+.bricks
 build
+dependencies
+
+.ignore
+compile_flags.txt
 

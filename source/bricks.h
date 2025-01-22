@@ -1,21 +1,21 @@
 #pragma once
 
 #include "definitions.h"
+#include "arena.h"
+#include "string2.h"
+#include "brickyard.h"
 
-typedef b32 CompilerBuildFunc(Allocator alloc, struct Blueprint *blueprint, struct Sheet *sheet);
 
+struct Blueprint;
+struct Entity;
+
+typedef void CompilerBuildFunc(Allocator alloc, Blueprint *blueprint, Entity *entity);
 struct Compiler {
     String name;
 
     CompilerBuildFunc *build;
 };
 
-enum PlatformKind {
-    TARGET_UNDEFINED,
-    TARGET_WIN32,
-
-    TARGET_COUNT,
-};
 
 struct TargetPlatformInfo {
     String exe;
@@ -23,113 +23,91 @@ struct TargetPlatformInfo {
     String shared_lib;
 };
 
-
-struct BrickyardEntry {
-    String name;
-    String path;
+enum DiagnosticKind {
+    DIAG_GENERAL,
+    DIAG_NOTE,
+    DIAG_WARNING,
+    DIAG_ERROR,
 };
-struct Brickyard {
-    DArray<BrickyardEntry> entries;
-    String content;
-    b32 loaded;
+struct Diagnostic {
+    DiagnosticKind kind;
+    String message;
 };
 
 
+// TODO: The state could contain an anonymous Entity. This maybe simplyfies error handling a bit.
+//       Also the parser could be a bit smaller.
 struct ApplicationState {
     // TODO: make a block based arena that can grow in size
     MemoryArena string_storage;
     Allocator   string_alloc;
 
-    String starting_directory;
-    String build_files_directory;
+    String starting_folder;
+    String build_files_folder;
 
-    String config_directory;
+    String config_folder;
     String brickyard_file;
     Brickyard brickyard;
 
-    String blueprint_file;
-
-    PlatformKind target_platform;
+    String target_platform;
     TargetPlatformInfo target_info;
 
     String build_type;
     String group;
 
+    List<Diagnostic> diagnostics;
+    b32 has_errors;
+
+    List<Compiler> compilers;
+
     b32 verbose;
 };
 
 
-struct Dependency {
-    String module;
-    String sheet;
-};
+void add_diagnostic(DiagnosticKind kind, String msg);
 
-enum {
-    SHEET_STATIC,
-    SHEET_SHARED,
-};
+b32 be_verbose();
 
-enum SheetKind {
-    SHEET_NONE,
-    SHEET_BLUEPRINT,
-    SHEET_BRICK,
-    SHEET_EXECUTABLE,
-    SHEET_LIBRARY,
+void load_core_compilers();
+b32  load_compiler_plugin(String shared_lib);
 
-    SHEET_COUNT,
-};
-enum SheetStatus {
-    SHEET_STATUS_UNBUILD,
-    SHEET_STATUS_READY,
-    SHEET_STATUS_ERROR,
-};
-struct Sheet {
-    SheetKind kind;
-    u32 additional_info;
 
-    SheetStatus status;
+// TODO: This should not be here.
+inline String remove_leading_slashes(String str) {
+    while (str.size) {
+        if (str[1] == '/' || str[1] == '\\') {
+            str = shrink_front(str, 1);
+        } else {
+            break;
+        }
+    }
 
-    String name;
-    String full_path;
+    return str;
+}
 
-    String compiler;
-    String linker;
+inline String remove_trailing_slashes(String str) {
+    while (str.size) {
+        if (str[-1] == '/' || str[-1] == '\\') {
+            str = shrink_back(str, 1);
+        } else {
+            break;
+        }
+    }
 
-    String group;
+    return str;
+}
 
-    String build_dir;
+inline String path_without_filename(String path) {
+    String result = {path.data, 0};
 
-    DArray<String> include_dirs;
-    DArray<String> symbols;
-    DArray<String> sources;
-    DArray<String> libraries;
+    for (s64 i = path.size; i > 0; i -= 1) {
+        s64 index = i - 1;
+        if (path[index] == '/' || path[index] == '\\') {
+            result.size = index;
+            break;
+        }
+    }
 
-    DArray<Dependency> dependencies;
-
-    DArray<String> diagnostics;
-};
-
-struct Blueprint {
-    String name;
-
-    String file;
-    String path;
-
-    String source;
-
-    String compiler;
-    String linker;
-
-    String build_dir;
-
-    DArray<Sheet> sheets;
-    DArray<Blueprint> blueprints;
-
-    bool valid;
-};
-
-enum LoadResult {
-    LOAD_OK,
-    LOAD_PARSE_ERROR,
-};
+    return result;
+}
 

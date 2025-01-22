@@ -1,0 +1,45 @@
+// ========================================================
+// Importing looks at subfolders first. If one is found
+// that contains a blueprint it will be included with the
+// name specified.
+// Otherwise it will be looked up in the brickyard.
+// ========================================================
+import "dependencies/mountain" as mountain;
+
+
+// ========================================================
+// There are currently three different Entities to use:
+// executables, libraries and bricks
+//
+// Each do different things but the first two build exactly
+// what the name implies. A brick is basically a collection
+// of files. You can just slap it onto your executable
+// and all source, defines etc. will be just added to the
+// compilation. Useful for header only libraries or smaller
+// libs with just a handful files.
+//
+// The fields can be further modified with parenthesis.
+// An identifier means build type.
+// An identifier lead by a # means the target platform.
+// The field will be ignored if nothing matches.
+// ========================================================
+executable: bricks {
+    // folder is the location where the build files will end up.
+    folder: "build/debug";
+    folder(release): "build/release";
+
+    // include specifies include directories for the compiler.
+    include: "source", "dependencies/mountain/source";
+
+    // symbols are compiler #defines.
+    symbols: "DEVELOPER", "BOUNDS_CHECKING";
+
+    // sources are the files that need to be build. A string with a leading /
+    // spedifies that all following files are in a sub folder.
+    sources: /"source", "bricks.cpp", "blueprint.cpp", "brickyard.cpp", "core_compilers\msvc.cpp";
+
+    // dependencies can be complete libraries (like platform specified libs) as strings.
+    // Or identifiers specifying Entities (libraries and bricks), also from imports.
+    dependencies: mountain.core;
+}
+

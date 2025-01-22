@@ -1,334 +1,215 @@
 #include "bricks.h"
+
 #include "platform.h"
-#include "memory.cpp"
-#include "string2.cpp"
-#include "io.cpp"
-#include "blueprint.cpp"
+#include "io.h"
+#include "string_builder.h"
+#include "arena.h"
+#include "blueprint.h"
+
+#include "core_compilers.h"
 
 
 ApplicationState App;
 
-INTERNAL b32 msvc_build_command(Allocator alloc, Blueprint *blueprint, Sheet *sheet);
 
-INTERNAL Compiler MSVC_Compiler = {
-    "msvc",
-
-    msvc_build_command,
-};
-
-INTERNAL void merge_arrays(DArray<String> *dest, Array<String> src) {
-    FOR (src, string) {
-        append_unique(*dest, *string);
-    }
+b32 be_verbose() {
+    return App.verbose;
 }
 
-INTERNAL void add_brick_to_sheet(Sheet *sheet, Sheet *brick) {
-    assert(brick->kind == SHEET_BRICK);
-
-    merge_arrays(&sheet->include_dirs, brick->include_dirs);
-    merge_arrays(&sheet->sources,      brick->sources);
-    merge_arrays(&sheet->libraries,    brick->libraries);
-    merge_arrays(&sheet->symbols,      brick->symbols);
+void load_core_compilers() {
+    append(&App.compilers, load_msvc());
 }
 
-INTERNAL Sheet *find_dependency(Blueprint *blueprint, Dependency dep) {
-    Blueprint *module = blueprint;
 
-    if (dep.module.size) {
-        FOR (blueprint->blueprints, bp) {
-            if (bp->name == dep.module) {
-                module = bp;
 
-                break;
-            }
-        }
 
-        if (module == blueprint) {
-            // TODO: log error in Sheet
-            print("Could not find blueprint %S for dependency %S.%S\n", dep.module, dep.module, dep.sheet);
-
-            return 0;
-        }
+INTERNAL Compiler *find_compiler(String name) {
+    FOR (App.compilers, compiler) {
+        if (compiler->name == name) return compiler;
     }
-
-    FOR (module->sheets, sheet) {
-        if (sheet->name == dep.sheet) {
-            return sheet;
-        }
-    }
-
-    // TODO: log error in Sheet
-    print("Could not find dependency %S.\n", dep.sheet);
 
     return 0;
 }
 
-INTERNAL String remove_line(String *str) {
-    String result;
-    result.data = str->data;
+INTERNAL String combine_entity_path(String bp_folder, String build_folder, String name, String extension) {
+    StringBuilder builder = {};
+    if (bp_folder != "") {
+        bp_folder = remove_trailing_slashes(bp_folder);
+
+        append(&builder, bp_folder);
+        append(&builder, '/');
+    }
+
+    if (build_folder != "") {
+        build_folder = remove_leading_slashes(build_folder);
+        build_folder = remove_trailing_slashes(build_folder);
+
+        append(&builder, build_folder);
+        append(&builder, '/');
+    }
+
+    name = remove_leading_slashes(name);
+    append(&builder, name);
+
+    if (extension != "") {
+        append(&builder, '.');
+        append(&builder, extension);
+    }
     
-    u32 const multi_char_line_end = '\n' + '\r';
-    for (s64 i = 0; i < str->size; i += 1) {
-        if (str->data[i] == '\n' || str->data[i] == '\r') {
-            result.size = i;
-            if (i + 1 < str->size && str->data[i] + str->data[i + 1] == multi_char_line_end) i += 1;
-
-            str->data += i + 1;
-            str->size -= i + 1;
-
-            return result;
-        }
-    }
-
-    result = *str;
-    *str = {};
-
-    return result;
+    return to_allocated_string(&builder, App.string_alloc);
 }
 
-INTERNAL b32 process_diagnostics(String output, DArray<String> *diagnostics) {
-    b32 encountered_errors = false;
+INTERNAL String combine_intermediate_path(String bp_folder, String name, String extension) {
+    StringBuilder builder = {};
+    if (bp_folder != "") {
+        bp_folder = remove_trailing_slashes(bp_folder);
 
-    while (output.size) {
-        String line = remove_line(&output);
-
-        if (contains(line, ": error ")) {
-            append(*diagnostics, allocate_string(App.string_alloc, line));
-            encountered_errors = true;
-        } else if (contains(line, ": fatal error ")) {
-            append(*diagnostics, allocate_string(App.string_alloc, line));
-            encountered_errors = true;
-        } else if (contains(line, " Command line error ")) {
-            append(*diagnostics, allocate_string(App.string_alloc, line));
-            encountered_errors = true;
-        } else if (contains(line, ": warning")) {
-            append(*diagnostics, allocate_string(App.string_alloc, line));
-        } else if (contains(line, ": note: ")) {
-            append(*diagnostics, allocate_string(App.string_alloc, line));
-        }
+        append(&builder, bp_folder);
+        append(&builder, '/');
     }
 
-    return encountered_errors;
+    append(&builder, ".bricks/");
+
+    name = remove_leading_slashes(name);
+    append(&builder, name);
+
+    if (extension != "") {
+        append(&builder, '.');
+        append(&builder, extension);
+    }
+    
+    return to_allocated_string(&builder, App.string_alloc);
 }
 
-INTERNAL b32 msvc_build_command(Allocator alloc, Blueprint *blueprint, Sheet *sheet) {
-    RESET_TEMP_STORAGE_ON_EXIT();
-    CHANGE_AND_RESET_DEFAULT_ALLOCATOR(alloc);
+INTERNAL void append_unique(List<String> *list, String str) {
+    FOR (*list, elem) {
+        if (*elem == str) return;
+    }
 
-    if (sheet->status == SHEET_STATUS_READY) return true;
-    if (sheet->status == SHEET_STATUS_ERROR) return false;
+    append(list, str);
+}
 
-    FOR (sheet->dependencies, dep) {
-        Sheet *sub = find_dependency(blueprint, *dep);
+INTERNAL void merge_arrays(List<String> *dest, Array<String> src) {
+    FOR (src, string) {
+        append_unique(dest, *string);
+    }
+}
+
+INTERNAL void add_brick_to_entity(Entity *entity, Entity *brick) {
+    assert(brick->kind == ENTITY_BRICK);
+
+    merge_arrays(&entity->include_folders, brick->include_folders);
+    merge_arrays(&entity->sources,      brick->sources);
+    merge_arrays(&entity->libraries,    brick->libraries);
+    merge_arrays(&entity->symbols,      brick->symbols);
+}
+
+INTERNAL void build(Blueprint *blueprint, Entity *entity) {
+    if (entity->group != App.group) return;
+
+    Compiler *compiler = find_compiler(entity->compiler);
+    if (compiler == 0) {
+        String msg = t_format("Unknown compiler %S specified for Entity %S.\n", entity->compiler, entity->name);
+        add_diagnostic(DIAG_ERROR, msg);
+        return;
+    }
+
+    // NOTE: Always print all diagnostics on failure or success.
+    DEFER(print_diagnostics(entity));
+
+    // TODO: Also print Entity kind.
+    print("Building %S\n", entity->name);
+
+    FOR (entity->dependencies, dep) {
+        Blueprint *module = find_submodule(blueprint, dep->module);
+        if (!module) {
+            blueprint->status = BLUEPRINT_ERROR;
+            return;
+        }
+
+        Entity *sub = find_dependency(module, dep->entity);
         if (!sub) {
-            append(sheet->diagnostics, format(App.string_alloc, "Could not build Sheet %S.", sheet->name));
+            blueprint->status = BLUEPRINT_ERROR;
+            return;
+        }
 
-            return false;
+        if (!sub) {
+            String msg = {};
+            if (dep->module == "") {
+                msg = t_format("Could not find dependency %S.", dep->entity);
+            } else {
+                msg = t_format("Could not find dependency %S.%S.", dep->module, dep->entity);
+            }
+
+            add_diagnostic(entity, DIAG_ERROR, msg);
+            return;
         }
 
         switch (sub->kind) {
-        case SHEET_BRICK: {
-            add_brick_to_sheet(sheet, sub);
+        case ENTITY_BRICK: {
+            add_brick_to_entity(entity, sub);
         } break;
 
-        case SHEET_LIBRARY: {
-            if (msvc_build_command(alloc, blueprint, sub)) {
-                append(sheet->libraries, sub->full_path);
+        case ENTITY_LIBRARY: {
+            build(module, sub);
+            if (sub->status == ENTITY_STATUS_READY) {
+                append(&entity->libraries, sub->file_path);
+                merge_arrays(&entity->libraries, sub->libraries);
             } else {
-                FOR (sub->diagnostics, diag) {
-                    print("%S\n", diag);
-                }
-
-                return false;
+                String msg = t_format("Could not build library %S.", sub->name);
+                add_diagnostic(entity, DIAG_ERROR, msg);
+                return;
             }
         } break;
 
         default:
-            append(sheet->diagnostics, format(App.string_alloc, "Can only add Bricks and Libraries as dependencies at the moment. (sheet: %S, dep: %S)\n", sheet->name, sub->name));
+            String msg = t_format("Can only add Bricks and Libraries as dependencies at the moment. (entity: %S, dep: %S)\n", entity->name, sub->name);
+            add_diagnostic(entity, DIAG_ERROR, msg);
 
-            return false;
+            return;
         }
     }
 
-    StringBuilder builder = {};
-    DEFER(destroy(&builder));
+    String extension = {};
+    if (entity->kind == ENTITY_EXECUTABLE) {
+        extension = App.target_info.exe;
+    } else if (entity->kind == ENTITY_LIBRARY) {
+        if (entity->lib_kind == STATIC_LIBRARY) {
+            extension = App.target_info.static_lib;
+        } else {
+            entity->status = ENTITY_STATUS_ERROR;
 
-    if (sheet->kind == SHEET_EXECUTABLE) {
-        String exe_name = sheet->name;
-        String exe_dir = t_format("%S/%S", App.build_files_directory, filename_without_path(sheet->full_path));
-
-        platform_delete_file_or_directory(exe_dir);
-        platform_create_directory(exe_dir);
-
-        append_format(&builder, "cl /nologo /permissive- /W2");
-
-        if (App.build_type == "debug") {
-            append(&builder, " /Zi /D\"DEVELOPER\"");
-        }
-
-        FOR (sheet->symbols, symbol) {
-            append_format(&builder, " /D\"%S\"", *symbol);
-        }
-
-        FOR (sheet->include_dirs, dir) {
-            append_format(&builder, " /I\"%S\"", *dir);
-        }
-
-        append_format(&builder, " /Fe\"%S/%S\"", sheet->build_dir, exe_name); // NOTE: /Fe -> executable name
-        append_format(&builder, " /Fo\"%S/\"", exe_dir); // NOTE: /Fo -> object file location, / means a folder for all files
-
-        if (App.build_type == "debug") {
-            append_format(&builder, " /Fd\"%S/\"", exe_dir);
-        }
-
-        FOR (sheet->sources, source) {
-            append_format(&builder, " \"%S\"", *source);
-        }
-
-        append(&builder, " /link /SUBSYSTEM:CONSOLE /INCREMENTAL:NO");
-
-        FOR (sheet->libraries, lib) {
-            append_format(&builder, " \"%S\"", *lib);
-        }
-
-        print("Building Executable: %S ", sheet->name);
-        flush_write_buffer(&Console.out);
-    } else if (sheet->kind == SHEET_LIBRARY) {
-        String object_dir = t_format("%S/%S", App.build_files_directory, filename_without_path(sheet->full_path));
-
-        platform_delete_file_or_directory(object_dir);
-        platform_create_directory(object_dir);
-
-        // NOTE: storing the compiled object files
-        DArray<String> object_files = {};
-        DEFER(destroy(object_files));
-
-        append(&builder, "cl /nologo /permissive- /W2 /c");
-
-        if (App.build_type == "debug") {
-            append(&builder, " /Zi /D\"DEVELOPER\"");
-        }
-
-        FOR (sheet->symbols, symbol) {
-            append_format(&builder, " /D\"%S\"", *symbol);
-        }
-
-        FOR (sheet->include_dirs, dir) {
-            append_format(&builder, " /I\"%S\"", *dir);
-        }
-
-        append_format(&builder, " /Fo\"%S/\"", object_dir); // NOTE: /Fo -> object file location, / means a folder for all files
-
-        if (App.build_type == "debug") {
-            append_format(&builder, " /Fd\"%S/\"", object_dir);
-        }
-
-        FOR (sheet->sources, source) {
-            append_format(&builder, " \"%S\"", *source);
-
-            append(object_files, format("%S/%S.%s", object_dir, filename_without_extension(*source), "obj"));
-        }
-
-        print("Building Library: %S ", sheet->name);
-        flush_write_buffer(&Console.out);
-
-        String command = temp_string(&builder);
-        if (App.verbose) print("with command: %S\n", command);
-
-        String output = platform_execute(command);
-        b32 encountered_errors = process_diagnostics(output, &sheet->diagnostics);
-        destroy_string(&output);
-
-        if (encountered_errors) {
-            FOR (object_files, file) {
-                destroy_string(file);
-            }
-
-            print("(failure)\n");
-            sheet->status = SHEET_STATUS_ERROR;
-
-            return false;
-        }
-
-        reset(&builder);
-
-        // TODO: the /ignore:4006 supresses the warning about warning LNK4006: __NULL_IMPORT_DESCRIPTOR already defined in other lib
-        //       I don't know if this is of any importance for other libs so it is ignored for now
-        append_format(&builder, "LIB /NOLOGO /ignore:4006 /OUT:\"%S\"", sheet->full_path);
-
-        FOR (object_files, file) {
-            append_format(&builder, " \"%S\"", *file);
-            destroy_string(file);
-        }
-
-        FOR (sheet->libraries, lib) {
-            append_format(&builder, " \"%S\"", lib);
+            String msg = t_format("Libary %S could not be build (Not implemented).", entity->name);
+            add_diagnostic(DIAG_ERROR, msg);
+            return;
         }
     } else {
-        append(sheet->diagnostics, format(App.string_alloc, "Can only build Executables and Libraries. (sheet: %S)\n", sheet->name));
+        entity->status = ENTITY_STATUS_ERROR;
+
+        String msg = t_format("Entity %S could not be build (Not implemented).", entity->name);
+        add_diagnostic(DIAG_ERROR, msg);
+        return;
     }
 
-    String command = temp_string(&builder);
-    if (App.verbose) print("with command: %S\n", command);
+    entity->intermediate_folder = combine_intermediate_path(blueprint->path, entity->name, extension);
 
-    String output = platform_execute(command);
-    DEFER(destroy_string(&output));
-
-    b32 encountered_errors = process_diagnostics(output, &sheet->diagnostics);
-
-    if (encountered_errors) {
-        print("(failure)\n");
-        sheet->status = SHEET_STATUS_ERROR;
+    // NOTE: Static libs are in the intermediate folder to not pollute the build folder by default.
+    if (entity->kind == ENTITY_LIBRARY && entity->lib_kind == STATIC_LIBRARY && entity->build_folder == "") {
+        entity->file_path = combine_entity_path(entity->intermediate_folder, "", entity->name, extension);
     } else {
-        sheet->status = SHEET_STATUS_READY;
-        print("(done)\n");
+        entity->file_path = combine_entity_path(blueprint->path, entity->build_folder, entity->name, extension);
     }
 
-    return !encountered_errors;
-}
+    platform_create_all_folders(path_without_filename(entity->file_path));
+    platform_create_folder(entity->intermediate_folder);
 
+    compiler->build(DefaultAllocator, blueprint, entity);
 
-INTERNAL Compiler KnownCompilers[] = {
-    MSVC_Compiler
-};
-
-
-INTERNAL Compiler *find_compiler(String name) {
-    for (s32 i = 0; i < ARRAY_SIZE(KnownCompilers); i += 1) {
-        if (equal(KnownCompilers[i].name, name)) return &KnownCompilers[i];
+    if (entity->status == ENTITY_STATUS_ERROR) {
+        App.has_errors = true;
+    } else {
+        entity->status = ENTITY_STATUS_READY;
     }
-
-    return 0;
-}
-
-
-
-INTERNAL b32 build_executable(Blueprint *blueprint, Sheet *sheet) {
-    if (sheet->group != App.group) return true;
-
-    assert(sheet->kind == SHEET_EXECUTABLE);
-
-
-    Compiler *compiler = find_compiler(sheet->compiler);
-    if (compiler == 0) {
-        print("Unknown compiler %S specified for Executable %S.\n", sheet->compiler, sheet->name);
-
-        return false;
-    }
-
-    platform_create_directory(sheet->build_dir);
-
-    b32 encountered_errors = false;
-
-    if (!compiler->build(default_allocator(), blueprint, sheet)) {
-        encountered_errors = true;
-    }
-
-    FOR (sheet->diagnostics, diag) {
-        print("%S\n", diag);
-    }
-
-    return !encountered_errors;
 }
 
 INTERNAL String last_directory(String path) {
@@ -345,19 +226,33 @@ INTERNAL String last_directory(String path) {
 }
 
 enum ApplicationMode {
-    APP_MODE_REGULAR,
+    APP_MODE_ERROR, // TODO: Is an error code needed here?
+    APP_MODE_BUILDING,
     APP_MODE_REGISTER,
-    APP_MODE_ERROR,
+};
+struct StartupOptions {
+    ApplicationMode mode;
+
+    String build_type;
+    String group;
+    String platform;
+
+    String register_name;
+
+    b32 verbose;
 };
 
-INTERNAL ApplicationMode process_arguments(Array<String> args) {
+INTERNAL StartupOptions process_arguments(Array<String> args) {
+    StartupOptions result = {};
+
     if (args.size > 1) {
         if (args[1] == "register") {
             if (args.size > 2) {
-                print("NOTE: Additional arguments provided after register. Will be ignored.\n");
+                result.register_name = args[2];
             }
 
-            return APP_MODE_REGISTER;
+            result.mode = APP_MODE_REGISTER;
+            return result;
         }
     }
 
@@ -370,7 +265,7 @@ INTERNAL ApplicationMode process_arguments(Array<String> args) {
             }
 
             i += 1;
-            App.build_type = args[i];
+            result.build_type = args[i];
         } else if (args[i] == "--group") {
             i += 1;
             if (args.size <= i) {
@@ -379,185 +274,163 @@ INTERNAL ApplicationMode process_arguments(Array<String> args) {
                 break;
             }
 
-            App.group = args[i];
+            result.group = args[i];
+        } else if (args[i] == "--platform") {
+            i += 1;
+            if (args.size <= i) {
+                print("NOTE: Argument 'platform' is missing an argument and will be ignored.\n");
+
+                break;
+            }
+
+            result.platform = args[i];
         } else if (args[i] == "--verbose") {
-            App.verbose = true;
+            result.verbose = true;
         } else {
             print("NOTE: Unknown argument %S. Will be ignored.\n", args[i]);
         }
     }
 
-    return APP_MODE_REGULAR;
+    return result;
 }
 
-INTERNAL TargetPlatformInfo TargetPlatforms[TARGET_COUNT] = {
-    /* TARGET_UNDEFINED */ {},
-    /* TARGET_WIN32     */ {".exe", ".lib", ".dll"},
-};
+void add_diagnostic(DiagnosticKind kind, String msg) {
+    Diagnostic diag = {};
+    diag.kind = kind;
+    diag.message = allocate_string(msg, App.string_alloc);
+
+    if (kind == DIAG_ERROR) App.has_errors = true;
+    
+    append(&App.diagnostics, diag);
+}
+
+INTERNAL void print_diagnostics() {
+    FOR (App.diagnostics, diag) {
+        print("%S\n", diag->message);
+    }
+}
 
 
-/* NOTE: is a cache really necessary? The reader should be just as fast as long as there is no check for changes to the files
-INTERNAL b32 process_cache_file() {
-    u64 cache_time     = platform_file_time(App.cache_file);
-    u64 blueprint_time = platform_file_time(App.blueprint_file);
+INTERNAL b32 get_platform_info(String platform, TargetPlatformInfo *info) {
+    b32 result = false;
 
-    // TODO: time is 0 if the file does not exist
-    if (cache_time && blueprint_time < cache_time) {
-        String cache = read_entire_file(App.cache_file);
-        DEFER(destroy_string(&cache));
-
-        Compiler *compiler = 0;
-
-        Array<String> lines = split_by_line_ending(cache);
-        FOR (lines, line) {
-            if (line->size == 0) continue;
-
-            if (starts_with(*line, "s ")) {
-                assert(compiler);
-
-                String tmp = shrink_front(*line, 2);
-                print("%S\n", tmp);
-            } else if (starts_with(*line, "c ")) {
-                assert(compiler);
-
-                String tmp = shrink_front(*line, 2);
-
-                if (!compiler->run(default_allocator(), tmp)) {
-                    print("Could not rebuild blueprint. Trying to build by reparsing.\n");
-                    platform_delete_file_or_directory(App.cache_file);
-
-                    return false;
-                }
-            } else if (starts_with(*line, "p ")) {
-                String tmp = shrink_front(*line, 2);
-
-                // TODO: better error checking
-                compiler = find_compiler(tmp);
-            } else {
-                // TODO: not die but exit
-                platform_delete_file_or_directory(App.cache_file);
-                die("Malformed cache file. Cache will be deleted.\n");
-
-                return true;
-            }
-        }
-
-        print("\nRebuild finished\n");
-
-        return true;
+    if (platform == "win32") {
+        *info = {"exe", "lib", "dll"};
+        result = true;
     }
 
-    return false;
+    return result;
 }
-*/
 
 
 s32 application_main(Array<String> args) {
-    App.string_storage = allocate_arena(MEGABYTES(4));
-    App.string_alloc   = {(AllocatorFunc*)allocate_from_arena, &App.string_storage};
+    init(&App.string_storage, MEGABYTES(4));
     DEFER(destroy(&App.string_storage));
 
-    String app_data_dir = platform_application_data_directory();
-    if (app_data_dir.size == 0) {
-        print("Could not load config file path.");
+    App.string_alloc = make_arena_allocator(&App.string_storage);
+
+    String config_folder = platform_home_folder();
+    if (config_folder == "") {
+        add_diagnostic(DIAG_ERROR, "Could not retrieve configuration path.");
+        print_diagnostics();
 
         return -1;
     }
 
-    App.starting_directory    = allocate_string(App.string_alloc, platform_current_working_directory());
-    App.build_files_directory = format(App.string_alloc, "%S/.bricks",    App.starting_directory);
-    App.config_directory      = format(App.string_alloc, "%S/bricks",     app_data_dir);
-    App.blueprint_file        = format(App.string_alloc, "%S/blueprint",  App.starting_directory);
-    App.brickyard_file        = format(App.string_alloc, "%S/brick.yard", App.config_directory);
+    String current_folder = platform_current_folder(App.string_alloc);
+    if (current_folder == "") {
+        add_diagnostic(DIAG_ERROR, "Could not retrieve current path.");
+        print_diagnostics();
 
-    platform_create_directory(App.build_files_directory);
+        return -1;
+    }
+
+    App.starting_folder    = platform_current_folder(App.string_alloc);
+    App.build_files_folder = format(App.string_alloc, "%S/.bricks",    App.starting_folder);
+    App.config_folder      = format(App.string_alloc, "%S/bricks",     config_folder);
+    App.brickyard_file     = format(App.string_alloc, "%S/brick.yard", App.config_folder);
 
 #ifdef OS_WINDOWS
-    App.target_platform = TARGET_WIN32;
+    App.target_platform = "win32";
 #endif
 
+    // TODO: Should debug even be the default?
     App.build_type = "debug";
 
-    ApplicationMode mode = process_arguments(args);
+    load_brickyard(&App.brickyard, App.brickyard_file, App.string_alloc);
+    DEFER(save_brickyard(&App.brickyard, App.brickyard_file));
 
-    if (mode == APP_MODE_REGISTER) {
-        String register_name = last_directory(App.starting_directory);
+    load_core_compilers();
 
-        if (!App.brickyard.loaded) {
-            LoadResult load_result = load_brickyard(&App);
-        }
+    StartupOptions options = process_arguments(args);
+    if (options.mode == APP_MODE_REGISTER) {
+        String name = options.register_name;
+        if (name == "") name = last_directory(App.starting_folder);
+
 
         FOR (App.brickyard.entries, entry) {
-            if (entry->name == register_name) {
-                print("Blueprint %S already registered.\n", register_name);
+            if (entry->name == name) {
+                print("Blueprint %S already registered.\n", name);
 
                 return -1;
             }
         }
 
-        append(App.brickyard.entries, {register_name, App.starting_directory});
+        add(&App.brickyard, name, "", App.starting_folder);
 
-        platform_delete_file_or_directory(App.brickyard_file);
-        PlatformFile file = platform_create_file_handle(App.brickyard_file, PLATFORM_FILE_WRITE);
+        platform_delete_file(App.brickyard_file);
+        PlatformFile file = platform_file_open(App.brickyard_file);
 
         FOR (App.brickyard.entries, entry) {
             format(&file, "%S {%S}\n", entry->name, entry->path);
         }
 
-        platform_close_file_handle(&file);
+        platform_file_close(&file);
         
-        print("Created Brick %S.\n", register_name);
+        print("Created Brickyard entry for %S.\n", name);
 
         return 0;
     }
 
-    assert(App.target_platform);
-    App.target_info = TargetPlatforms[App.target_platform];
+    if (options.verbose) App.verbose = true;
 
-    b32 encountered_build_errors = false;
+    platform_create_folder(App.build_files_folder);
 
-    Blueprint blueprint = parse_blueprint_file(App.blueprint_file);
-    DEFER(free_blueprint(&blueprint));
+    if (!get_platform_info(App.target_platform, &App.target_info)) {
+        add_diagnostic(DIAG_ERROR, t_format("Unsupported platform %S.", App.target_platform));
+        print_diagnostics();
 
-    if (blueprint.valid == false) {
-        print("Stopping build.\n");
         return -1;
     }
 
-    FOR (blueprint.sheets, sheet) {
-        reset_temporary_storage();
+    Blueprint main_blueprint = {};
+    DEFER(destroy(&main_blueprint));
 
-        if (sheet->kind == SHEET_EXECUTABLE) {
-            if (!build_executable(&blueprint, sheet)) {
-                encountered_build_errors = true;
+    parse_blueprint_file(&main_blueprint, "blueprint");
+
+    b32 has_stuff_to_build = false;
+    if (!App.has_errors) {
+        FOR (main_blueprint.entitys, entity) {
+            if (entity->kind == ENTITY_EXECUTABLE) {
+                build(&main_blueprint, entity);
+                has_stuff_to_build = true;
             }
         }
     }
 
-    if (encountered_build_errors) {
-        print("\nBuild finished with errors.\n");
+    s32 result = 0;
+    if (App.has_errors) {
+        print_diagnostics();
+
+        print("\nBuild aborted.\n");
+        result = -1;
     } else {
-        /*
-        String cache = to_allocated_string(&App.cache_builder);
-        DEFER(destroy_string(&cache));
+        print_diagnostics();
+        if (!has_stuff_to_build) print("Nothing to build.\n");
 
-        PlatformFile cache_file = platform_create_file_handle(App.cache_file, PLATFORM_FILE_WRITE);
-        if (cache_file.open) {
-            platform_write(&cache_file, cache.data, cache.size);
-            platform_close_file_handle(&cache_file);
-        } else {
-            print("ERROR: Could not create cache file.\n");
-        }
-        */
-
-        print("\nBuild finished\n");
+        print("\nBuild finished.\n");
     }
 
-    return encountered_build_errors;
+    return result;
 }
-
-
-#ifdef OS_WINDOWS
-#include "win32_platform.cpp"
-#endif
 
