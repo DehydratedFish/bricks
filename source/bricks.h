@@ -35,10 +35,11 @@ struct Diagnostic {
 };
 
 
-// TODO: The state could contain an anonymous Entity. This maybe simplyfies error handling a bit.
+// TODO: The state could contain an anonymous or root Entity.
+//       This maybe simplyfies error handling a bit.
 //       Also the parser could be a bit smaller.
 struct ApplicationState {
-    // TODO: make a block based arena that can grow in size
+    // TODO: The allocator should grow in size.
     MemoryArena string_storage;
     Allocator   string_alloc;
 

@@ -89,6 +89,8 @@ INTERNAL void append_unique(List<String> *list, String str) {
     append(list, str);
 }
 
+// TODO: This is very slow and bad.
+//       Alternatively the array could be sorted and then binary searched.
 INTERNAL void merge_arrays(List<String> *dest, Array<String> src) {
     FOR (src, string) {
         append_unique(dest, *string);
@@ -345,7 +347,7 @@ s32 application_main(Array<String> args) {
         return -1;
     }
 
-    App.starting_folder    = platform_current_folder(App.string_alloc);
+    App.starting_folder    = current_folder;
     App.build_files_folder = format(App.string_alloc, "%S/.bricks",    App.starting_folder);
     App.config_folder      = format(App.string_alloc, "%S/bricks",     config_folder);
     App.brickyard_file     = format(App.string_alloc, "%S/brick.yard", App.config_folder);
@@ -378,15 +380,7 @@ s32 application_main(Array<String> args) {
 
         add(&App.brickyard, name, "", App.starting_folder);
 
-        platform_delete_file(App.brickyard_file);
-        PlatformFile file = platform_file_open(App.brickyard_file);
-
-        FOR (App.brickyard.entries, entry) {
-            format(&file, "%S {%S}\n", entry->name, entry->path);
-        }
-
-        platform_file_close(&file);
-        
+        // NOTE: Brickyard will be saved on scope exit anyways.
         print("Created Brickyard entry for %S.\n", name);
 
         return 0;

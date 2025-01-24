@@ -2,6 +2,7 @@
 
 #include "platform.h"
 #include "binary.h"
+#include "bricks.h"
 
 
 enum EntryKind : u8 {
@@ -9,6 +10,8 @@ enum EntryKind : u8 {
     // ENTRY_GROUP     = 0x02,
 };
 
+// TODO: Maybe only load the brickyard on import?
+//       Would be added complexity but the file would not need to be parsed if not needed.
 b32 load_brickyard(Brickyard *yard, String file, Allocator alloc) {
     auto read_result = platform_read_entire_file(file);
     DEFER(destroy(&read_result.content));
@@ -40,6 +43,10 @@ b32 load_brickyard(Brickyard *yard, String file, Allocator alloc) {
 
 b32 save_brickyard(Brickyard *yard, String file, b32 force) {
     if (yard->is_dirty || force) {
+        String path = path_without_filename(file);
+
+        // TODO: Only create if the file does not exist.
+        platform_create_all_folders(path);
         PlatformFile yard_file = platform_file_open(file, PlatformFileOverride);
         if (!yard_file.open) return false;
 
@@ -72,7 +79,7 @@ void destroy(Brickyard *yard) {
 }
 
 void add(Brickyard *yard, String name, String version, String path) {
-    assert(yard->allocator.allocate);
+    //assert(yard->allocator.allocate);
 
     BrickyardEntry entry = {};
     entry.name    = allocate_string(name,    yard->allocator);
