@@ -21,6 +21,17 @@ void load_core_compilers() {
 }
 
 
+INTERNAL String enum_string(EntityKind kind) {
+    String const lookup[ENTITY_COUNT] = {
+        "None",
+        "Brick",
+        "Executable",
+        "Library",
+    };
+
+    assert(kind < ENTITY_COUNT);
+    return lookup[kind];
+}
 
 
 INTERNAL Compiler *find_compiler(String name) {
@@ -119,9 +130,6 @@ INTERNAL void build(Blueprint *blueprint, Entity *entity) {
     // NOTE: Always print all diagnostics on failure or success.
     DEFER(print_diagnostics(entity));
 
-    // TODO: Also print Entity kind.
-    print("Building %S\n", entity->name);
-
     FOR (entity->dependencies, dep) {
         Blueprint *module = find_submodule(blueprint, dep->module);
         if (!module) {
@@ -165,11 +173,18 @@ INTERNAL void build(Blueprint *blueprint, Entity *entity) {
         } break;
 
         default:
+            // TODO: Executables should be dependencies as well, they will just not be added to the entity.
             String msg = t_format("Can only add Bricks and Libraries as dependencies at the moment. (entity: %S, dep: %S)\n", entity->name, sub->name);
             add_diagnostic(entity, DIAG_ERROR, msg);
 
             return;
         }
+    }
+
+    if (blueprint->name == "") {
+        print("Building %S %S\n", enum_string(entity->kind), entity->name);
+    } else {
+        print("Building %S %S.%S\n", enum_string(entity->kind), blueprint->name, entity->name);
     }
 
     String extension = {};
@@ -205,7 +220,26 @@ INTERNAL void build(Blueprint *blueprint, Entity *entity) {
     platform_create_all_folders(path_without_filename(entity->file_path));
     platform_create_folder(entity->intermediate_folder);
 
-    compiler->build(DefaultAllocator, blueprint, entity);
+    compiler->generate_commands(DefaultAllocator, blueprint, entity);
+
+    for (s32 i = 0; i < entity->build_command_count; i += 1) {
+        String command = entity->build_commands[i];
+
+        // TODO: print might be not a great option. Maybe do something like a DIAG_MESSAGE?
+        if (be_verbose()) print("with command: %S\n", command);
+
+        // TODO: The context could use a fixed size buffer to remove allocations.
+        //       I don't think outputs over 1mb would be helpful in any way.
+        auto context = platform_execute(command);
+        if (context.error) {
+            log_error("Could not run command %S.", command);
+            return;
+        }
+
+        compiler->process_diagnostics(entity, context.output);
+
+        destroy(&context.output);
+    }
 
     if (entity->status == ENTITY_STATUS_ERROR) {
         App.has_errors = true;

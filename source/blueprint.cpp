@@ -536,7 +536,6 @@ INTERNAL String combine_file_path(String folder, String sub_folder, String name)
 
 INTERNAL String EntityKindLookup[ENTITY_COUNT] = {
     "<NONE>",
-    "Blueprint",
     "Brick",
     "Executable",
     "Library",
@@ -570,6 +569,21 @@ INTERNAL b32 parse_deps(Parser *parser, Entity *entity, b32 skip) {
         } else {
             parse_error(parser, parser->current_token.loc, "Expected library string or entity identifier.");
         }
+    } while (match(parser, TOKEN_COMMA));
+
+    return result;
+}
+
+// TODO: This does not work for per Entity compiler specifiers.
+//       The compiler field can be after the flags field and so the wrong field will be added.
+INTERNAL b32 parse_compiler_flags(Parser *parser, Entity *entity, b32 skip_field) {
+    b32 result = true;
+
+    do {
+        if (!consume(parser, TOKEN_STRING, "Expected string as flag.")) result = false;
+
+        if (skip_field) continue;
+        append(&entity->compiler_flags, allocate_string(parser->previous_token.content, App.string_alloc));
     } while (match(parser, TOKEN_COMMA));
 
     return result;
@@ -637,7 +651,7 @@ INTERNAL b32 parse_sources(Parser *parser, Entity *entity, b32 skip) {
     return result;
 }
 
-INTERNAL b32 parse_field_spec(Parser *parser, Blueprint *bp) {
+INTERNAL b32 parse_field_spec(Parser *parser, Blueprint *bp, Entity *entity) {
     b32 skip_field = true;
 
     if (match(parser, TOKEN_LEFT_PARENTHESIS)) {
@@ -654,6 +668,10 @@ INTERNAL b32 parse_field_spec(Parser *parser, Blueprint *bp) {
                 // TODO: Also allow strings?
                 if (!consume(parser, TOKEN_IDENTIFIER, "Expected platform specifier.")) return true;
                 if (parser->previous_token.content == App.target_platform) skip_field = false;
+            } else if (match(parser, TOKEN_AT)) {
+                // TODO: Also allow strings?
+                if (!consume(parser, TOKEN_IDENTIFIER, "Expected compiler specifier.")) return true;
+                if (parser->previous_token.content == entity->compiler) skip_field = false;
             } else {
                 parse_error(parser, parser->current_token.loc, "Expected build type or platform specifier as field argument.");
             }
@@ -672,11 +690,12 @@ INTERNAL b32 parse_field(Parser *parser, Entity *entity, Blueprint *bp) {
     if (!consume(parser, TOKEN_IDENTIFIER, t_format("Unkown field %S.", parser->current_token.content))) {
         return result;
     }
-    
-    Token name_token = parser->previous_token;
+
+    Token  name_token = parser->previous_token;
     String name = name_token.content;
 
-    b32 skip_field = parse_field_spec(parser, bp);
+    // TODO: Maybe this should be in the parse functions?
+    b32 skip_field = parse_field_spec(parser, bp, entity);
 
     if (!consume(parser, TOKEN_COLON, "Missing : in field.")) return result;
 
@@ -690,6 +709,8 @@ INTERNAL b32 parse_field(Parser *parser, Entity *entity, Blueprint *bp) {
         result = parse_symbols(parser, entity, skip_field);
     } else if (name == "dependencies") {
         result = parse_deps(parser, entity, skip_field);
+    } else if (name == "compiler_flags") {
+        result = parse_compiler_flags(parser, entity, skip_field);
     } else {
         parse_error(parser, name_token.loc, t_format("Unkown field %S.", name));
     }
@@ -913,6 +934,15 @@ Entity *find_dependency(Blueprint *bp, String name) {
 
     add_diagnostic(DIAG_ERROR, t_format("No entity %S in blueprint %S.\n", name, bp->name));
     return 0;
+}
+
+void add_build_command(Entity *entity, StringBuilder *builder) {
+    if (entity->build_command_count < ENTITY_COMMAND_COUNT) {
+        entity->build_commands[entity->build_command_count] = to_allocated_string(builder, App.string_alloc);
+        entity->build_command_count += 1;
+    } else {
+        add_diagnostic(entity, DIAG_ERROR, "Too many build commands generated.");
+    }
 }
 
 void print_diagnostics(Entity *entity) {

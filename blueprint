@@ -41,5 +41,7 @@ executable: bricks {
     // dependencies can be complete libraries (like platform specified libs) as strings.
     // Or identifiers specifying Entities (libraries and bricks), also from imports.
     dependencies: mountain.core;
+
+    tools:
 }
 

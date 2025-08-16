@@ -9,12 +9,15 @@
 struct Blueprint;
 struct Entity;
 
-typedef void CompilerBuildFunc(Allocator alloc, Blueprint *blueprint, Entity *entity);
+typedef void BuildCommandsFunc(Allocator alloc, Blueprint *blueprint, Entity *entity);
+typedef void ProcessCommandDiagFunc(Entity *entity, String output);
 struct Compiler {
     String name;
 
-    CompilerBuildFunc *build;
+    BuildCommandsFunc *generate_commands;
+    ProcessCommandDiagFunc *process_diagnostics;
 };
+
 
 
 struct TargetPlatformInfo {

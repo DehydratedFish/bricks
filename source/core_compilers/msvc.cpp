@@ -98,6 +98,10 @@ INTERNAL void msvc_build_command(Allocator alloc, Blueprint *blueprint, Entity *
             append(&builder, " /Zi");
         }
 
+        FOR (entity->compiler_flags, flag) {
+            format(&builder, " %S", *flag);
+        }
+
         FOR (entity->symbols, symbol) {
             format(&builder, " /D\"%S\"", *symbol);
         }
@@ -124,27 +128,20 @@ INTERNAL void msvc_build_command(Allocator alloc, Blueprint *blueprint, Entity *
             format(&builder, " \"%S\"", *lib);
         }
 
-        String command = temp_string(&builder);
-        if (be_verbose()) print("with command: %S\n", command);
-
-        auto context = platform_execute(command);
-        if (context.error) {
-            log_error("Could not run command %S.", command);
-            return;
-        }
-        DEFER(destroy(&context.output));
-
-        process_diagnostics(entity, context.output);
+        add_build_command(entity, &builder);
     } else if (entity->kind == ENTITY_LIBRARY) {
-        // NOTE: storing the compiled object files
+        // NOTE: Compiled object files need to be stored, sadly.
         List<String> object_files = {};
-        object_files.allocator = alloc;
         DEFER(destroy(&object_files));
 
         append(&builder, "cl /nologo /permissive- /W2 /c");
 
         if (blueprint->build_type == "debug") {
             append(&builder, " /Zi");
+        }
+
+        FOR (entity->compiler_flags, flag) {
+            format(&builder, " %S", *flag);
         }
 
         FOR (entity->symbols, symbol) {
@@ -169,21 +166,7 @@ INTERNAL void msvc_build_command(Allocator alloc, Blueprint *blueprint, Entity *
             append(&object_files, obj);
         }
 
-        String command = to_allocated_string(&builder);
-        if (be_verbose()) print("with command: %S\n", command);
-
-        auto context = platform_execute(command);
-        if (context.error) {
-            log_error("Could not run command %S.", command);
-            return;
-        }
-
-        process_diagnostics(entity, context.output);
-        destroy(&context.output);
-        destroy(&command);
-
-        if (entity->status == ENTITY_STATUS_ERROR) return;
-
+        add_build_command(entity, &builder);
         reset(&builder);
 
         format(&builder, "LIB /NOLOGO /OUT:\"%S\"", entity->file_path);
@@ -193,21 +176,9 @@ INTERNAL void msvc_build_command(Allocator alloc, Blueprint *blueprint, Entity *
             destroy(file);
         }
 
-        command = to_allocated_string(&builder);
-        if (be_verbose()) print("with command: %S\n", command);
-
-        context = platform_execute(command);
-        if (context.error) {
-            log_error("Could not run command %S.", command);
-            return;
-        }
-
-        process_diagnostics(entity, context.output);
-        destroy(&context.output);
-        destroy(&command);
+        add_build_command(entity, &builder);
     } else {
         add_diagnostic(entity, DIAG_ERROR, t_format("Can only build Executables and Libraries. (entity: %S)\n", entity->name));
-        return;
     }
 
     return;
@@ -217,7 +188,8 @@ INTERNAL void msvc_build_command(Allocator alloc, Blueprint *blueprint, Entity *
 Compiler load_msvc() {
     Compiler result = {};
     result.name  = "msvc";
-    result.build = msvc_build_command;
+    result.generate_commands   = msvc_build_command;
+    result.process_diagnostics = process_diagnostics;
 
     return result;
 }

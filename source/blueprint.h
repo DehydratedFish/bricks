@@ -4,6 +4,8 @@
 #include "list.h"
 
 
+struct StringBuilder;
+
 struct Dependency {
     String module;
     String entity;
@@ -15,9 +17,10 @@ enum LibraryKind {
     SHARED_LIBRARY,
 };
 
+const s32 ENTITY_COMMAND_COUNT = 4;
+
 enum EntityKind {
     ENTITY_NONE,
-    ENTITY_BLUEPRINT,
     ENTITY_BRICK,
     ENTITY_EXECUTABLE,
     ENTITY_LIBRARY,
@@ -52,8 +55,15 @@ struct Entity {
     List<String> libraries;
 
     List<Dependency> dependencies;
+    
+    List<String> compiler_flags;
 
-    List<String> build_commands;
+
+    // NOTE: Needed to write out the commands into a shell script.
+    //       Multiple commands needed for libs as e.g. msvc can't link libs in one go
+    //       and needs seperate object files to be linked.
+    String build_commands[ENTITY_COMMAND_COUNT];
+    s32 build_command_count;
 
     List<Diagnostic> diagnostics;
     b32 has_errors;
@@ -89,6 +99,8 @@ void destroy(Blueprint *bp);
 
 Blueprint *find_submodule (Blueprint *bp, String name);
 Entity    *find_dependency(Blueprint *bp, String name);
+
+void add_build_command(Entity *entity, StringBuilder *builder);
 
 void print_diagnostics(Entity *entity);
 void add_diagnostic(Entity *entity, DiagnosticKind kind, String msg);
