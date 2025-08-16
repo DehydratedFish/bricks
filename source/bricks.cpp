@@ -442,7 +442,6 @@ s32 application_main(Array<String> args) {
     if (!App.has_errors) {
         FOR (main_blueprint.entitys, entity) {
             if (entity->kind == ENTITY_EXECUTABLE) {
-                print("group: %S, size: %D\n", App.group, entity->groups.size);
                 if ((App.group == "" && entity->groups.size == 0) ||
                     (contains((Array<String>)entity->groups, App.group))) {
                     build(&main_blueprint, entity);
