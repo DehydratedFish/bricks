@@ -44,8 +44,6 @@ struct Entity {
     String compiler;
     String linker;
 
-    String group;
-
     String name;
     String build_folder;
 
@@ -53,6 +51,7 @@ struct Entity {
     List<String> symbols;
     List<String> sources;
     List<String> libraries;
+    List<String> groups;
 
     List<Dependency> dependencies;
     

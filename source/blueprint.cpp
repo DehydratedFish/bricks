@@ -589,6 +589,19 @@ INTERNAL b32 parse_compiler_flags(Parser *parser, Entity *entity, b32 skip_field
     return result;
 }
 
+INTERNAL b32 parse_group(Parser *parser, Entity *entity, b32 skip) {
+    b32 result = true;
+
+    do {
+        if (!consume(parser, TOKEN_STRING, "Expected string as symbol.")) result = false;
+
+        if (skip) continue;
+        append(&entity->groups, allocate_string(parser->previous_token.content, App.string_alloc));
+    } while (match(parser, TOKEN_COMMA));
+
+    return result;
+}
+
 INTERNAL b32 parse_symbols(Parser *parser, Entity *entity, b32 skip) {
     b32 result = true;
 
@@ -711,6 +724,8 @@ INTERNAL b32 parse_field(Parser *parser, Entity *entity, Blueprint *bp) {
         result = parse_deps(parser, entity, skip_field);
     } else if (name == "compiler_flags") {
         result = parse_compiler_flags(parser, entity, skip_field);
+    } else if (name == "group") {
+        result = parse_group(parser, entity, skip_field);
     } else {
         parse_error(parser, name_token.loc, t_format("Unkown field %S.", name));
     }

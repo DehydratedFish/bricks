@@ -1,6 +1,7 @@
 #include "bricks.h"
 
 #include "platform.h"
+#include "array.h"
 #include "io.h"
 #include "string_builder.h"
 #include "arena.h"
@@ -118,8 +119,6 @@ INTERNAL void add_brick_to_entity(Entity *entity, Entity *brick) {
 }
 
 INTERNAL void build(Blueprint *blueprint, Entity *entity) {
-    if (entity->group != App.group) return;
-
     Compiler *compiler = find_compiler(entity->compiler);
     if (compiler == 0) {
         String msg = t_format("Unknown compiler %S specified for Entity %S.\n", entity->compiler, entity->name);
@@ -161,7 +160,8 @@ INTERNAL void build(Blueprint *blueprint, Entity *entity) {
         } break;
 
         case ENTITY_LIBRARY: {
-            build(module, sub);
+            if (sub->status != ENTITY_STATUS_READY) build(module, sub);
+
             if (sub->status == ENTITY_STATUS_READY) {
                 append(&entity->libraries, sub->file_path);
                 merge_arrays(&entity->libraries, sub->libraries);
@@ -421,6 +421,8 @@ s32 application_main(Array<String> args) {
     }
 
     if (options.verbose) App.verbose = true;
+    
+    App.group = options.group;
 
     platform_create_folder(App.build_files_folder);
 
@@ -440,8 +442,12 @@ s32 application_main(Array<String> args) {
     if (!App.has_errors) {
         FOR (main_blueprint.entitys, entity) {
             if (entity->kind == ENTITY_EXECUTABLE) {
-                build(&main_blueprint, entity);
-                has_stuff_to_build = true;
+                print("group: %S, size: %D\n", App.group, entity->groups.size);
+                if ((App.group == "" && entity->groups.size == 0) ||
+                    (contains((Array<String>)entity->groups, App.group))) {
+                    build(&main_blueprint, entity);
+                    has_stuff_to_build = true;
+                }
             }
         }
     }
