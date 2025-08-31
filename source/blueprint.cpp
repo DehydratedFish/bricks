@@ -43,7 +43,7 @@ enum TokenKind {
     TOKEN_KEYWORD_EXECUTABLE,
     TOKEN_KEYWORD_BRICK,
     TOKEN_KEYWORD_LIBRARY,
-    TOKEN_KEYWORD_IMPORT,
+    TOKEN_KEYWORD_USE,
     TOKEN_KEYWORD_AS,
 
     TOKEN_MISSING_QUOTE,
@@ -225,7 +225,7 @@ INTERNAL Token parse_identifier(Parser *parser) {
     else if (token.content == "brick")      token.kind = TOKEN_KEYWORD_BRICK;
     else if (token.content == "library")    token.kind = TOKEN_KEYWORD_LIBRARY;
     // TODO: Do something like a global import. So the blueprint will always be loaded from the brickyard.
-    else if (token.content == "import")     token.kind = TOKEN_KEYWORD_IMPORT;
+    else if (token.content == "use")        token.kind = TOKEN_KEYWORD_USE;
     else if (token.content == "as")         token.kind = TOKEN_KEYWORD_AS;
 
     return token;
@@ -790,63 +790,49 @@ INTERNAL void parse_entity_declaration(Parser *parser, Blueprint *blueprint) {
     append(&blueprint->entitys, entity);
 }
 
-INTERNAL void parse_import(Parser *parser, Blueprint *blueprint) {
+INTERNAL void parse_use(Parser *parser, Blueprint *blueprint) {
     advance_token(parser);
 
-    if (current_token_is(parser, TOKEN_IDENTIFIER) || current_token_is(parser, TOKEN_STRING)) {
+    // TODO: This makes the package name "local" impossible.
+    Import import = {};
+    if (current_token_is(parser, TOKEN_IDENTIFIER) && parser->current_token.content == "local") {
         advance_token(parser);
-    } else {
-        parse_error(parser, parser->current_token.loc, "Import missing name or path.");
-        return;
-    }
-
-    Token name_token = parser->previous_token;
-
-    // TODO: Think of something to specifiy a version.
-    String version = {};
-
-    // TODO: Maybe support multiple groups?
-    String group = {};
-
-    if (match(parser, TOKEN_COLON)) {
-        if(!consume(parser, TOKEN_IDENTIFIER, "Missing group name.")) {
-            return;
-        }
-        group = parser->previous_token.content;
+        import.local = true;
     }
 
     String name = {};
-    if (match(parser, TOKEN_KEYWORD_AS)) {
-        if (!consume(parser, TOKEN_IDENTIFIER, "Rename needs to be an identifier.")) return;
+    if (current_token_is(parser, TOKEN_IDENTIFIER)) {
+        name = parser->current_token.content;
 
-        name = allocate_string(parser->previous_token.content, App.string_alloc);
-    } else {
-        name = allocate_string(name_token.content, App.string_alloc);
-    }
+        advance_token(parser);
+    } else if (current_token_is(parser, TOKEN_STRING)) {
+        if (import.local) {
+            name = parser->current_token.content;
 
-    // NOTE: First looking for a sub directory with the import name.
-    String path = t_format("%S/blueprint", name_token.content);
-    if (!platform_file_exists(path)) {
-        path = find(&App.brickyard, name_token.content, version);
-        if (path == "") {
-            parse_error(parser, name_token.loc, t_format("Could not find %S in the Brickyard.", name_token.content));
-            return;
+            advance_token(parser);
         } else {
-            path = t_format("%S/blueprint", path);
+            // TODO: Check if string is a single word instead.
+            parse_error(parser, parser->current_token.loc, "Use currently only supports string when local.");
+            return;
         }
-    }
-
-    if (!consume(parser, TOKEN_SEMICOLON, "Missing ; after import.")) return;
-
-    Blueprint import = {};
-    parse_blueprint_file(&import, path);
-    import.name = name;
-
-    if (import.status == BLUEPRINT_ERROR) {
-        destroy(&import);
     } else {
-        append(&blueprint->imports, import);
+        parse_error(parser, parser->current_token.loc, "Use missing name or path.");
+        return;
     }
+
+    String alias = name; // NOTE: Always have an alias for later.
+    if (match(parser, TOKEN_KEYWORD_AS)) {
+        if (!consume(parser, TOKEN_IDENTIFIER, "Alias needs to be an identifier.")) return;
+
+        alias = parser->previous_token.content;
+    }
+
+    if (!consume(parser, TOKEN_SEMICOLON, "Missing ; after use.")) return;
+
+    import.name  = allocate_string(name,  App.string_alloc);
+    import.alias = allocate_string(alias, App.string_alloc);
+
+    append(&blueprint->imports, import);
 }
 
 INTERNAL void parse_statement(Parser *parser, Blueprint *blueprint) {
@@ -861,8 +847,8 @@ INTERNAL void parse_statement(Parser *parser, Blueprint *blueprint) {
         parse_entity_declaration(parser, blueprint);
     } break;
 
-    case TOKEN_KEYWORD_IMPORT: {
-        parse_import(parser, blueprint);
+    case TOKEN_KEYWORD_USE: {
+        parse_use(parser, blueprint);
     } break;
 
     default:
@@ -914,8 +900,8 @@ void destroy(Blueprint *blueprint) {
         destroy(entity);
     }
 
-    FOR (blueprint->imports, bp) {
-        destroy(bp);
+    FOR (blueprint->imports, import) {
+        destroy(&import->blueprint);
     }
 
     destroy(&blueprint->entitys);
@@ -928,8 +914,8 @@ void destroy(Blueprint *blueprint) {
 Blueprint *find_submodule(Blueprint *bp, String name) {
     if (name != "") {
         FOR (bp->imports, import) {
-            if (import->name == name) {
-                return import;
+            if (import->alias == name) {
+                return &import->blueprint;
             }
         }
 
@@ -947,7 +933,11 @@ Entity *find_dependency(Blueprint *bp, String name) {
         }
     }
 
-    add_diagnostic(DIAG_ERROR, t_format("No entity %S in blueprint %S.\n", name, bp->name));
+    if (bp->name == "") {
+        add_diagnostic(DIAG_ERROR, t_format("No entity %S in blueprint.\n", name));
+    } else {
+        add_diagnostic(DIAG_ERROR, t_format("No entity %S in blueprint %S.\n", name, bp->name));
+    }
     return 0;
 }
 

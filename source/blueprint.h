@@ -4,6 +4,7 @@
 #include "list.h"
 
 
+struct Import;
 struct StringBuilder;
 
 struct Dependency {
@@ -88,8 +89,17 @@ struct Blueprint {
     String build_folder;
     String build_type;
 
-    List<Entity>    entitys;
-    List<Blueprint> imports;
+    List<Entity> entitys;
+    List<Import> imports;
+};
+
+struct Import {
+    // NOTE: If the blueprint is local then name can have a path.
+    b32 local;
+    String name;
+    String alias;
+    String version;
+    Blueprint blueprint;
 };
 
 

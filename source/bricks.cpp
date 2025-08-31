@@ -248,6 +248,30 @@ INTERNAL void build(Blueprint *blueprint, Entity *entity) {
     }
 }
 
+INTERNAL void process_imports(Blueprint *blueprint) {
+    FOR (blueprint->imports, import) {
+        if (import->local) {
+            String file = t_format("%S/blueprint", import->name);
+            if (!platform_file_exists(file)) {
+                add_diagnostic(DIAG_ERROR, t_format("No blueprint file in folder %S found.", import->name));
+                return;
+            }
+
+            parse_blueprint_file(&import->blueprint, file);
+        } else {
+            String yard_folder = find(&App.brickyard, import->name);
+
+            String file = t_format("%S/blueprint", yard_folder);
+            if (!platform_file_exists(file)) {
+                add_diagnostic(DIAG_ERROR, t_format("Missing blueprint file in Brickyard entry for %S. Was it deleted maybe?", import->name));
+                return;
+            }
+
+            parse_blueprint_file(&import->blueprint, file);
+        }
+    }
+}
+
 INTERNAL String last_directory(String path) {
     if (path.size == 0) return path;
     if (path[path.size - 1] == '/') path.size -= 1;
@@ -437,6 +461,8 @@ s32 application_main(Array<String> args) {
     DEFER(destroy(&main_blueprint));
 
     parse_blueprint_file(&main_blueprint, "blueprint");
+
+    process_imports(&main_blueprint);
 
     b32 has_stuff_to_build = false;
     if (!App.has_errors) {
