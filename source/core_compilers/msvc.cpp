@@ -94,12 +94,9 @@ INTERNAL void msvc_build_command(Allocator alloc, Blueprint *blueprint, Entity *
 
         append(&builder, "cl /nologo /permissive- /W2");
 
-        if (blueprint->build_type == "debug") {
-            append(&builder, " /Zi");
-        }
-
-        FOR (entity->compiler_flags, flag) {
-            format(&builder, " %S", *flag);
+        FOR (entity->options, option) {
+            append(&builder, ' ');
+            append(&builder, *option);
         }
 
         FOR (entity->symbols, symbol) {
@@ -111,9 +108,9 @@ INTERNAL void msvc_build_command(Allocator alloc, Blueprint *blueprint, Entity *
         }
 
         format(&builder, " /Fe\"%S\"", entity->file_path); // NOTE: /Fe -> executable name
-        format(&builder, " /Fo\"%S/\"", entity->intermediate_folder); // NOTE: /Fo -> object file location, / means a folder for all files
+        format(&builder, " /Fo\"%S\"", entity->intermediate_folder); // NOTE: /Fo -> object file location, / means a folder for all files
 
-        if (blueprint->build_type == "debug") {
+        {
             String folder = path_without_filename(entity->file_path);
             if (folder != "") format(&builder, " /Fd\"%S/\"", folder);
         }
@@ -136,12 +133,9 @@ INTERNAL void msvc_build_command(Allocator alloc, Blueprint *blueprint, Entity *
 
         append(&builder, "cl /nologo /permissive- /W2 /c");
 
-        if (blueprint->build_type == "debug") {
-            append(&builder, " /Zi");
-        }
-
-        FOR (entity->compiler_flags, flag) {
-            format(&builder, " %S", *flag);
+        FOR (entity->options, option) {
+            append(&builder, ' ');
+            append(&builder, *option);
         }
 
         FOR (entity->symbols, symbol) {
@@ -155,7 +149,7 @@ INTERNAL void msvc_build_command(Allocator alloc, Blueprint *blueprint, Entity *
         // TODO: Shared lib needs to be in the build folder.
         format(&builder, " /Fo\"%S/\"", entity->intermediate_folder); // NOTE: /Fo -> object file location, / means a folder for all files
 
-        if (blueprint->build_type == "debug") {
+        {
             format(&builder, " /Fd\"%S/\"", entity->intermediate_folder);
         }
 

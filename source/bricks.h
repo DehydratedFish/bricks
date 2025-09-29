@@ -3,6 +3,9 @@
 #include "definitions.h"
 #include "arena.h"
 #include "string2.h"
+#include "string_builder.h"
+#include "pool.h"
+#include "hash_table.h"
 #include "brickyard.h"
 
 
@@ -43,8 +46,11 @@ struct Diagnostic {
 //       Also the parser could be a bit smaller.
 struct ApplicationState {
     // TODO: The allocator should grow in size.
-    MemoryArena string_storage;
-    Allocator   string_alloc;
+    //MemoryArena string_storage;
+    //Allocator   string_alloc;
+
+    MemoryPool persistent_memory;
+    Allocator  persistent_alloc;
 
     String starting_folder;
     String build_files_folder;
@@ -65,12 +71,18 @@ struct ApplicationState {
     List<Compiler> compilers;
 
     b32 verbose;
+
+    String trace_file_name;
+    StringBuilder trace_file;
+
+    HashTable<String, Blueprint*> imports;
 };
 
 
 void add_diagnostic(DiagnosticKind kind, String msg);
 
 b32 be_verbose();
+b32 create_trace();
 
 void load_core_compilers();
 b32  load_compiler_plugin(String shared_lib);

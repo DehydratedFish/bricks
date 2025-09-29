@@ -10,6 +10,8 @@ enum EntryKind : u8 {
     // ENTRY_GROUP     = 0x02,
 };
 
+
+
 // TODO: Maybe only load the brickyard on import?
 //       Would be added complexity but the file would not need to be parsed if not needed.
 b32 load_brickyard(Brickyard *yard, String file, Allocator alloc) {

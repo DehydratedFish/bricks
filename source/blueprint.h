@@ -51,14 +51,12 @@ struct Entity {
     List<String> include_folders;
     List<String> symbols;
     List<String> sources;
+    List<String> options;
     List<String> libraries;
     List<String> groups;
 
     List<Dependency> dependencies;
     
-    List<String> compiler_flags;
-
-
     // NOTE: Needed to write out the commands into a shell script.
     //       Multiple commands needed for libs as e.g. msvc can't link libs in one go
     //       and needs seperate object files to be linked.
@@ -72,8 +70,8 @@ struct Entity {
 enum BlueprintStatus {
     BLUEPRINT_INIT,
     BLUEPRINT_PARSING,
-    BLUEPRINT_BUILDING,
     BLUEPRINT_READY,
+    BLUEPRINT_BUILDING,
     BLUEPRINT_ERROR,
 };
 struct Blueprint {
@@ -89,21 +87,17 @@ struct Blueprint {
     String build_folder;
     String build_type;
 
-    List<Entity> entitys;
-    List<Import> imports;
+    HashTable<String, Entity*>    entities;
+    HashTable<String, Blueprint*> local_imports;
+    HashTable<String, Blueprint*> named_imports;
 };
 
-struct Import {
-    // NOTE: If the blueprint is local then name can have a path.
-    b32 local;
-    String name;
-    String alias;
-    String version;
-    Blueprint blueprint;
-};
-
-
+void parse_blueprint(Blueprint *bp, String code);
 void parse_blueprint_file(Blueprint *bp, String file);
+
+Entity *create_entity();
+
+Blueprint *create_blueprint();
 void destroy(Blueprint *bp);
 
 Blueprint *find_submodule (Blueprint *bp, String name);

@@ -4,7 +4,6 @@
 #include "array.h"
 #include "io.h"
 #include "string_builder.h"
-#include "arena.h"
 #include "blueprint.h"
 
 #include "core_compilers.h"
@@ -15,6 +14,10 @@ ApplicationState App;
 
 b32 be_verbose() {
     return App.verbose;
+}
+
+b32 create_trace() {
+    return App.trace_file_name != "";
 }
 
 void load_core_compilers() {
@@ -68,7 +71,7 @@ INTERNAL String combine_entity_path(String bp_folder, String build_folder, Strin
         append(&builder, extension);
     }
     
-    return to_allocated_string(&builder, App.string_alloc);
+    return to_allocated_string(&builder, App.persistent_alloc);
 }
 
 INTERNAL String combine_intermediate_path(String bp_folder, String name, String extension) {
@@ -89,8 +92,13 @@ INTERNAL String combine_intermediate_path(String bp_folder, String name, String 
         append(&builder, '.');
         append(&builder, extension);
     }
+
+    append(&builder, '/');
+    if (App.build_type != "") {
+        format(&builder, "%S/", App.build_type);
+    }
     
-    return to_allocated_string(&builder, App.string_alloc);
+    return to_allocated_string(&builder, App.persistent_alloc);
 }
 
 INTERNAL void append_unique(List<String> *list, String str) {
@@ -114,6 +122,7 @@ INTERNAL void add_brick_to_entity(Entity *entity, Entity *brick) {
 
     merge_arrays(&entity->include_folders, brick->include_folders);
     merge_arrays(&entity->sources,      brick->sources);
+    merge_arrays(&entity->options,      brick->options);
     merge_arrays(&entity->libraries,    brick->libraries);
     merge_arrays(&entity->symbols,      brick->symbols);
 }
@@ -182,9 +191,23 @@ INTERNAL void build(Blueprint *blueprint, Entity *entity) {
     }
 
     if (blueprint->name == "") {
-        print("Building %S %S\n", enum_string(entity->kind), entity->name);
+        char const *fmt = "Building %S %S";
+
+        print(fmt, enum_string(entity->kind), entity->name);
+        if (create_trace()) {
+            append(&App.trace_file, "echo ");
+            format(&App.trace_file, fmt, enum_string(entity->kind), entity->name);
+            append(&App.trace_file, "\n");
+        }
     } else {
-        print("Building %S %S.%S\n", enum_string(entity->kind), blueprint->name, entity->name);
+        char const *fmt = "Building %S %S.%S";
+
+        print(fmt, enum_string(entity->kind), blueprint->name, entity->name);
+        if (create_trace()) {
+            append(&App.trace_file, "echo ");
+            format(&App.trace_file, fmt, enum_string(entity->kind), blueprint->name, entity->name);
+            append(&App.trace_file, "\n");
+        }
     }
 
     String extension = {};
@@ -220,54 +243,47 @@ INTERNAL void build(Blueprint *blueprint, Entity *entity) {
     platform_create_all_folders(path_without_filename(entity->file_path));
     platform_create_folder(entity->intermediate_folder);
 
+    if (create_trace()) {
+        format(&App.trace_file, "IF NOT EXIST %S mkdir \"%S\"\n", path_without_filename(entity->file_path), path_without_filename(entity->file_path));
+        format(&App.trace_file, "IF NOT EXIST %S mkdir \"%S\"\n", entity->intermediate_folder, entity->intermediate_folder);
+    }
+
     compiler->generate_commands(DefaultAllocator, blueprint, entity);
 
     for (s32 i = 0; i < entity->build_command_count; i += 1) {
         String command = entity->build_commands[i];
-
-        // TODO: print might be not a great option. Maybe do something like a DIAG_MESSAGE?
-        if (be_verbose()) print("with command: %S\n", command);
 
         // TODO: The context could use a fixed size buffer to remove allocations.
         //       I don't think outputs over 1mb would be helpful in any way.
         auto context = platform_execute(command);
         if (context.error) {
             log_error("Could not run command %S.", command);
-            return;
+            break;
         }
 
         compiler->process_diagnostics(entity, context.output);
 
         destroy(&context.output);
+
+        if (create_trace()) {
+            format(&App.trace_file, "%S\n", command);
+        }
     }
 
     if (entity->status == ENTITY_STATUS_ERROR) {
         App.has_errors = true;
+
+        print("... failed\n");
     } else {
         entity->status = ENTITY_STATUS_READY;
+
+        print("... done\n");
     }
-}
 
-INTERNAL void process_imports(Blueprint *blueprint) {
-    FOR (blueprint->imports, import) {
-        if (import->local) {
-            String file = t_format("%S/blueprint", import->name);
-            if (!platform_file_exists(file)) {
-                add_diagnostic(DIAG_ERROR, t_format("No blueprint file in folder %S found.", import->name));
-                return;
-            }
-
-            parse_blueprint_file(&import->blueprint, file);
-        } else {
-            String yard_folder = find(&App.brickyard, import->name);
-
-            String file = t_format("%S/blueprint", yard_folder);
-            if (!platform_file_exists(file)) {
-                add_diagnostic(DIAG_ERROR, t_format("Missing blueprint file in Brickyard entry for %S. Was it deleted maybe?", import->name));
-                return;
-            }
-
-            parse_blueprint_file(&import->blueprint, file);
+    // TODO: Print might be not a great option. Maybe do something like a DIAG_MESSAGE?
+    if (be_verbose()) {
+        for (s32 i = 0; i < entity->build_command_count; i += 1) {
+            print("with command: %S\n", entity->build_commands[i]);
         }
     }
 }
@@ -298,6 +314,7 @@ struct StartupOptions {
     String platform;
 
     String register_name;
+    String trace_file_name;
 
     b32 verbose;
 };
@@ -318,13 +335,13 @@ INTERNAL StartupOptions process_arguments(Array<String> args) {
 
     for (s64 i = 1; i < args.size; i += 1) {
         if (args[i] == "--build_type") {
-            if (args.size < i) {
+            i += 1;
+            if (args.size <= i) {
                 print("NOTE: Argument 'build_type' is missing a type and will be ignored.\n");
 
                 break;
             }
 
-            i += 1;
             result.build_type = args[i];
         } else if (args[i] == "--group") {
             i += 1;
@@ -344,6 +361,15 @@ INTERNAL StartupOptions process_arguments(Array<String> args) {
             }
 
             result.platform = args[i];
+        } else if (args[i] == "--trace") {
+            i += 1;
+            if (args.size <= i) {
+                print("NOTE: Argument 'trace' is missing an argument and will be ignored.\n");
+
+                break;
+            }
+
+            result.trace_file_name = args[i];
         } else if (args[i] == "--verbose") {
             result.verbose = true;
         } else {
@@ -357,7 +383,7 @@ INTERNAL StartupOptions process_arguments(Array<String> args) {
 void add_diagnostic(DiagnosticKind kind, String msg) {
     Diagnostic diag = {};
     diag.kind = kind;
-    diag.message = allocate_string(msg, App.string_alloc);
+    diag.message = allocate_string(msg, App.persistent_alloc);
 
     if (kind == DIAG_ERROR) App.has_errors = true;
     
@@ -382,12 +408,19 @@ INTERNAL b32 get_platform_info(String platform, TargetPlatformInfo *info) {
     return result;
 }
 
+INTERNAL void prepare_trace_file() {
+    if (!create_trace()) return;
+
+    // TODO: Do stuff depending on the type of shell script.
+    append(&App.trace_file, "@echo off\n\n");
+}
+
 
 s32 application_main(Array<String> args) {
-    init(&App.string_storage, MEGABYTES(4));
-    DEFER(destroy(&App.string_storage));
+    init(&App.persistent_memory, MEGABYTES(1));
+    DEFER(destroy(&App.persistent_memory));
 
-    App.string_alloc = make_arena_allocator(&App.string_storage);
+    App.persistent_alloc = make_pool_allocator(&App.persistent_memory);
 
     String config_folder = platform_home_folder();
     if (config_folder == "") {
@@ -397,7 +430,7 @@ s32 application_main(Array<String> args) {
         return -1;
     }
 
-    String current_folder = platform_current_folder(App.string_alloc);
+    String current_folder = platform_current_folder(App.persistent_alloc);
     if (current_folder == "") {
         add_diagnostic(DIAG_ERROR, "Could not retrieve current path.");
         print_diagnostics();
@@ -406,18 +439,15 @@ s32 application_main(Array<String> args) {
     }
 
     App.starting_folder    = current_folder;
-    App.build_files_folder = format(App.string_alloc, "%S/.bricks",    App.starting_folder);
-    App.config_folder      = format(App.string_alloc, "%S/bricks",     config_folder);
-    App.brickyard_file     = format(App.string_alloc, "%S/brick.yard", App.config_folder);
+    App.build_files_folder = format(App.persistent_alloc, "%S/.bricks",    App.starting_folder);
+    App.config_folder      = format(App.persistent_alloc, "%S/bricks",     config_folder);
+    App.brickyard_file     = format(App.persistent_alloc, "%S/brick.yard", App.config_folder);
 
 #ifdef OS_WINDOWS
     App.target_platform = "win32";
 #endif
 
-    // TODO: Should debug even be the default?
-    App.build_type = "debug";
-
-    load_brickyard(&App.brickyard, App.brickyard_file, App.string_alloc);
+    load_brickyard(&App.brickyard, App.brickyard_file, App.persistent_alloc);
     DEFER(save_brickyard(&App.brickyard, App.brickyard_file));
 
     load_core_compilers();
@@ -444,9 +474,10 @@ s32 application_main(Array<String> args) {
         return 0;
     }
 
-    if (options.verbose) App.verbose = true;
-    
-    App.group = options.group;
+    App.verbose = options.verbose;
+    App.group   = options.group;
+    App.build_type      = options.build_type;
+    App.trace_file_name = options.trace_file_name;
 
     platform_create_folder(App.build_files_folder);
 
@@ -457,20 +488,25 @@ s32 application_main(Array<String> args) {
         return -1;
     }
 
-    Blueprint main_blueprint = {};
-    DEFER(destroy(&main_blueprint));
+    Blueprint *main_blueprint = create_blueprint();
+    DEFER(destroy(main_blueprint));
 
-    parse_blueprint_file(&main_blueprint, "blueprint");
+    parse_blueprint_file(main_blueprint, "blueprint");
 
-    process_imports(&main_blueprint);
+    prepare_trace_file();
 
     b32 has_stuff_to_build = false;
     if (!App.has_errors) {
-        FOR (main_blueprint.entitys, entity) {
+        for (s64 i = 0; i < main_blueprint->entities.alloc; i += 1) {
+            auto *entry = &main_blueprint->entities.entries[i];
+
+            if (entry->hash == 0) continue;
+
+            Entity *entity = entry->value;
             if (entity->kind == ENTITY_EXECUTABLE) {
                 if ((App.group == "" && entity->groups.size == 0) ||
                     (contains((Array<String>)entity->groups, App.group))) {
-                    build(&main_blueprint, entity);
+                    build(main_blueprint, entity);
                     has_stuff_to_build = true;
                 }
             }
@@ -485,7 +521,21 @@ s32 application_main(Array<String> args) {
         result = -1;
     } else {
         print_diagnostics();
-        if (!has_stuff_to_build) print("Nothing to build.\n");
+        if (has_stuff_to_build) {
+            if (create_trace()) {
+                PlatformFile trace_file = platform_file_open(App.trace_file_name, PlatformFileOverride);
+                if (!trace_file.open) {
+                    print("\nCould not write to trace file %S.\n", App.trace_file_name);
+                } else {
+                    write_builder_to_file(&App.trace_file, &trace_file);
+                    print("\nTraced build commands to %S.\n", App.trace_file_name);
+                }
+
+                platform_file_close(&trace_file);
+            }
+        } else {
+            print("Nothing to build.\n");
+        }
 
         print("\nBuild finished.\n");
     }

@@ -4,6 +4,9 @@
 #include "list.h"
 
 
+struct Blueprint;
+
+
 struct BrickyardEntry {
     String name;
     String version;
@@ -18,7 +21,6 @@ struct Brickyard {
 
     // TODO: This will still be allocated by the DefaultAllocator.
     List<BrickyardEntry> entries;
-
     b32 is_dirty;
 };
 

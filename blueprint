@@ -4,7 +4,7 @@
 // name specified.
 // Otherwise it will be looked up in the brickyard.
 // ========================================================
-import "dependencies/mountain" as mountain;
+use local "dependencies/mountain" as mountain;
 
 
 // ========================================================
@@ -29,7 +29,7 @@ executable: bricks {
     folder(release): "build/release";
 
     // include specifies include directories for the compiler.
-    include: "source", "dependencies/mountain/source";
+    include: "source";
 
     // symbols are compiler #defines.
     symbols: "DEVELOPER", "BOUNDS_CHECKING";

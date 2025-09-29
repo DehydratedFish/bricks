@@ -6,6 +6,12 @@
 #include "io.h"
 
 
+INTERNAL String BasicFile =
+    "brick: debug {\n"
+    "    options(@msvc): \"-Zi\";\n"
+    "}\n";
+
+
 extern ApplicationState App;
 
 struct SourceLocation {
@@ -194,7 +200,7 @@ INTERNAL void parse_error(Parser *parser, SourceLocation loc, String message) {
     }
     append(&builder, "^");
 
-    add_diagnostic(DIAG_ERROR, to_allocated_string(&builder, App.string_alloc));
+    add_diagnostic(DIAG_ERROR, to_allocated_string(&builder, App.persistent_alloc));
     parser->bp->status = BLUEPRINT_ERROR;
 }
 
@@ -477,17 +483,6 @@ INTERNAL bool match(Parser *parser, TokenKind kind) {
 
 
 
-INTERNAL void default_config(Blueprint *blueprint) {
-    *blueprint = {};
-
-#ifdef OS_WINDOWS
-    blueprint->compiler = "msvc";
-    blueprint->linker   = "msvc";
-#endif
-
-    blueprint->build_type = App.build_type;
-}
-
 
 INTERNAL void parse_declaration(Parser *parser, Blueprint *blueprint) {
     if (!consume(parser, TOKEN_IDENTIFIER, "Missing field name.")) return;
@@ -531,7 +526,7 @@ INTERNAL String combine_file_path(String folder, String sub_folder, String name)
     name = remove_leading_slashes(name);
     append(&builder, name);
     
-    return to_allocated_string(&builder, App.string_alloc);
+    return to_allocated_string(&builder, App.persistent_alloc);
 }
 
 INTERNAL String EntityKindLookup[ENTITY_COUNT] = {
@@ -560,30 +555,15 @@ INTERNAL b32 parse_deps(Parser *parser, Entity *entity, b32 skip) {
             if (skip) continue;
 
             if (dep.module != "") {
-                dep.module = allocate_string(dep.module, App.string_alloc);
+                dep.module = allocate_string(dep.module, App.persistent_alloc);
             }
-            dep.entity = allocate_string(dep.entity, App.string_alloc);
+            dep.entity = allocate_string(dep.entity, App.persistent_alloc);
             append(&entity->dependencies, dep);
         } else if (match(parser, TOKEN_STRING)) {
-            append(&entity->libraries, allocate_string(parser->previous_token.content, App.string_alloc));
+            append(&entity->libraries, allocate_string(parser->previous_token.content, App.persistent_alloc));
         } else {
             parse_error(parser, parser->current_token.loc, "Expected library string or entity identifier.");
         }
-    } while (match(parser, TOKEN_COMMA));
-
-    return result;
-}
-
-// TODO: This does not work for per Entity compiler specifiers.
-//       The compiler field can be after the flags field and so the wrong field will be added.
-INTERNAL b32 parse_compiler_flags(Parser *parser, Entity *entity, b32 skip_field) {
-    b32 result = true;
-
-    do {
-        if (!consume(parser, TOKEN_STRING, "Expected string as flag.")) result = false;
-
-        if (skip_field) continue;
-        append(&entity->compiler_flags, allocate_string(parser->previous_token.content, App.string_alloc));
     } while (match(parser, TOKEN_COMMA));
 
     return result;
@@ -596,7 +576,7 @@ INTERNAL b32 parse_group(Parser *parser, Entity *entity, b32 skip) {
         if (!consume(parser, TOKEN_STRING, "Expected string as symbol.")) result = false;
 
         if (skip) continue;
-        append(&entity->groups, allocate_string(parser->previous_token.content, App.string_alloc));
+        append(&entity->groups, allocate_string(parser->previous_token.content, App.persistent_alloc));
     } while (match(parser, TOKEN_COMMA));
 
     return result;
@@ -609,7 +589,20 @@ INTERNAL b32 parse_symbols(Parser *parser, Entity *entity, b32 skip) {
         if (!consume(parser, TOKEN_STRING, "Expected string as symbol.")) result = false;
 
         if (skip) continue;
-        append(&entity->symbols, allocate_string(parser->previous_token.content, App.string_alloc));
+        append(&entity->symbols, allocate_string(parser->previous_token.content, App.persistent_alloc));
+    } while (match(parser, TOKEN_COMMA));
+
+    return result;
+}
+
+INTERNAL b32 parse_options(Parser *parser, Entity *entity, b32 skip) {
+    b32 result = true;
+
+    do {
+        if (!consume(parser, TOKEN_STRING, "Expected string as option.")) result = false;
+
+        if (skip) continue;
+        append(&entity->options, allocate_string(parser->previous_token.content, App.persistent_alloc));
     } while (match(parser, TOKEN_COMMA));
 
     return result;
@@ -634,7 +627,7 @@ INTERNAL b32 parse_build_folder(Parser *parser, Entity *entity, b32 skip) {
 
     if (consume(parser, TOKEN_STRING, "Missing build folder.")) {
         if (!skip) {
-            entity->build_folder = allocate_string(parser->previous_token.content, App.string_alloc);
+            entity->build_folder = allocate_string(parser->previous_token.content, App.persistent_alloc);
         }
         result = true;
     }
@@ -720,10 +713,10 @@ INTERNAL b32 parse_field(Parser *parser, Entity *entity, Blueprint *bp) {
         result = parse_includes(parser, entity, skip_field);
     } else if (name == "symbols") {
         result = parse_symbols(parser, entity, skip_field);
+    } else if (name == "options") {
+        result = parse_options(parser, entity, skip_field);
     } else if (name == "dependencies") {
         result = parse_deps(parser, entity, skip_field);
-    } else if (name == "compiler_flags") {
-        result = parse_compiler_flags(parser, entity, skip_field);
     } else if (name == "group") {
         result = parse_group(parser, entity, skip_field);
     } else {
@@ -756,71 +749,122 @@ INTERNAL void parse_entity_declaration(Parser *parser, Blueprint *blueprint) {
         parse_error(parser, parser->current_token.loc, msg);
     }
 
-    Entity entity = {};
-    entity.kind = kind;
-    entity.lib_kind  = lib_kind;
-    entity.compiler  = blueprint->compiler;
-    entity.linker    = blueprint->linker;
+    Entity *entity = create_entity();
+    entity->kind = kind;
+    entity->lib_kind  = lib_kind;
+    entity->compiler  = blueprint->compiler;
+    entity->linker    = blueprint->linker;
     
     // NOTE: On static libraries the resulting lib should not necessarily be
     //       in the build folder. Only put it there if the blueprint specifies it.
-    if (entity.kind != ENTITY_LIBRARY && entity.lib_kind != STATIC_LIBRARY) {
-        entity.build_folder = blueprint->build_folder;
+    if (entity->kind != ENTITY_LIBRARY && entity->lib_kind != STATIC_LIBRARY) {
+        entity->build_folder = blueprint->build_folder;
     }
 
     advance_token(parser);
 
-    if (!consume(parser, TOKEN_COLON, t_format("Missing : after %S.", enum_string(entity.kind)))) return;
-    if (!consume(parser, TOKEN_IDENTIFIER, t_format("Missing %S name.", enum_string(entity.kind)))) return;
-    entity.name = parser->previous_token.content;
+    if (!consume(parser, TOKEN_COLON, t_format("Missing : after %S.", enum_string(entity->kind)))) return;
+    if (!consume(parser, TOKEN_IDENTIFIER, t_format("Missing %S name.", enum_string(entity->kind)))) return;
+    entity->name = parser->previous_token.content;
 
     if (!consume(parser, TOKEN_LEFT_BRACE, "Missing { in declaration.")) {
-        entity.status = ENTITY_STATUS_ERROR;
+        entity->status = ENTITY_STATUS_ERROR;
         return;
     }
 
     do {
         if (match(parser, TOKEN_RIGHT_BRACE)) break;
 
-        if (!parse_field(parser, &entity, blueprint)) {
+        if (!parse_field(parser, entity, blueprint)) {
             return;
         }
     } while (parser->previous_token.kind == TOKEN_SEMICOLON || match(parser, TOKEN_RIGHT_BRACE));
 
-    append(&blueprint->entitys, entity);
+    insert(&blueprint->entities, entity->name, entity);
+}
+
+INTERNAL void import_entities(Blueprint *bp, Blueprint *import) {
+    for (s64 i = 0; i < import->entities.alloc; i += 1) {
+        auto *entry = &import->entities.entries[i];
+
+        if (entry->hash != 0) {
+            if (find(&bp->entities, entry->key)) {
+                // TODO: Include blueprint name in error message.
+                add_diagnostic(DIAG_ERROR, format("Imported Entity %S already defined in Blueprint [placeholder].", entry->key));
+            } else {
+                insert(&bp->entities, entry->key, entry->value);
+            }
+        }
+    }
+}
+
+INTERNAL void import_blueprint(Blueprint *bp, b32 local, String name, String alias = "") {
+    auto *table = local ? &bp->local_imports : &App.imports;
+
+    Blueprint *import = 0;
+
+    Blueprint **found = find(table, name);
+    if (found) {
+        import = *found;
+    } else {
+        import = create_blueprint();
+
+        if (local) {
+            parse_blueprint_file(import, t_format("%S/blueprint", name));
+        } else {
+            String file = find(&App.brickyard, name);
+            if (file == "") {
+                // TODO: Not happy with predefined blueprints in memory.
+                //       This should be a file that is read in, but then there needs to be some sort
+                //       of initialisation at startup for it.
+                if (name == "basic") {
+                    parse_blueprint(import, BasicFile);
+                } else {
+                    add_diagnostic(DIAG_ERROR, t_format("Blueprint %S not registered in Brickyard.", name));
+                    return;
+                }
+            } else {
+                parse_blueprint_file(import, file);
+            }
+        }
+    }
+
+    insert(table, name, import);
+
+    if (alias == "") {
+        import_entities(bp, import);
+    } else {
+        Blueprint **found = find(&bp->named_imports, alias);
+        if (found) {
+            add_diagnostic(DIAG_ERROR, t_format("Import with name %S already declared."));
+        } else {
+            insert(&bp->named_imports, alias, import);
+        }
+    }
 }
 
 INTERNAL void parse_use(Parser *parser, Blueprint *blueprint) {
     advance_token(parser);
 
-    // TODO: This makes the package name "local" impossible.
-    Import import = {};
+    b32 local = false;
+    // NOTE: This means an import of package 'local' must be a string.
     if (current_token_is(parser, TOKEN_IDENTIFIER) && parser->current_token.content == "local") {
         advance_token(parser);
-        import.local = true;
+        local = true;
     }
 
     String name = {};
-    if (current_token_is(parser, TOKEN_IDENTIFIER)) {
+    if (current_token_is(parser, TOKEN_IDENTIFIER) ||
+        current_token_is(parser, TOKEN_STRING)) {
         name = parser->current_token.content;
 
         advance_token(parser);
-    } else if (current_token_is(parser, TOKEN_STRING)) {
-        if (import.local) {
-            name = parser->current_token.content;
-
-            advance_token(parser);
-        } else {
-            // TODO: Check if string is a single word instead.
-            parse_error(parser, parser->current_token.loc, "Use currently only supports string when local.");
-            return;
-        }
     } else {
         parse_error(parser, parser->current_token.loc, "Use missing name or path.");
         return;
     }
 
-    String alias = name; // NOTE: Always have an alias for later.
+    String alias = {};
     if (match(parser, TOKEN_KEYWORD_AS)) {
         if (!consume(parser, TOKEN_IDENTIFIER, "Alias needs to be an identifier.")) return;
 
@@ -829,10 +873,7 @@ INTERNAL void parse_use(Parser *parser, Blueprint *blueprint) {
 
     if (!consume(parser, TOKEN_SEMICOLON, "Missing ; after use.")) return;
 
-    import.name  = allocate_string(name,  App.string_alloc);
-    import.alias = allocate_string(alias, App.string_alloc);
-
-    append(&blueprint->imports, import);
+    import_blueprint(blueprint, local, name, alias);
 }
 
 INTERNAL void parse_statement(Parser *parser, Blueprint *blueprint) {
@@ -856,10 +897,20 @@ INTERNAL void parse_statement(Parser *parser, Blueprint *blueprint) {
     }
 }
 
-// TODO: Make this more usable/configurable for imports.
-void parse_blueprint_file(Blueprint *blueprint, String file) {
-    default_config(blueprint);
+void parse_blueprint(Blueprint *bp, String code) {
+    bp->status = BLUEPRINT_PARSING;
 
+    Parser parser = init_parser(code, bp);
+    while (!current_token_is(&parser, TOKEN_END_OF_INPUT)) {
+        parse_statement(&parser, bp);
+
+        if (bp->status == BLUEPRINT_ERROR) break;
+    }
+
+    bp->status = BLUEPRINT_READY;
+}
+
+void parse_blueprint_file(Blueprint *bp, String file) {
     auto read_result = platform_read_entire_file(file);
     if (read_result.error) {
         String full = t_format("%S/%S", App.starting_folder, file);
@@ -868,21 +919,15 @@ void parse_blueprint_file(Blueprint *blueprint, String file) {
         } else {
             add_diagnostic(DIAG_ERROR, t_format("Read error in file %S.", full));
         }
-        blueprint->status = BLUEPRINT_ERROR;
+        bp->status = BLUEPRINT_ERROR;
 
         return;
     }
 
-    blueprint->file = allocate_string(file, App.string_alloc);
-    blueprint->path = path_without_filename(blueprint->file);
+    bp->file = allocate_string(file, App.persistent_alloc);
+    bp->path = path_without_filename(bp->file);
 
-    Parser parser = init_parser(read_result.content, blueprint);
-
-    while (!current_token_is(&parser, TOKEN_END_OF_INPUT)) {
-        parse_statement(&parser, blueprint);
-
-        if (blueprint->status == BLUEPRINT_ERROR) break;
-    }
+    parse_blueprint(bp, read_result.content);
 }
 
 void destroy(Entity *entity) {
@@ -895,17 +940,27 @@ void destroy(Entity *entity) {
     INIT_STRUCT(entity);
 }
 
+Entity *create_entity() {
+    return ALLOC(App.persistent_alloc, Entity, 1);
+}
+
+Blueprint *create_blueprint() {
+    Blueprint *blueprint = ALLOC(App.persistent_alloc, Blueprint, 1);
+
+#ifdef OS_WINDOWS
+    blueprint->compiler = "msvc";
+    blueprint->linker   = "msvc";
+#endif
+
+    blueprint->build_type = App.build_type;
+
+    return blueprint;
+}
+
 void destroy(Blueprint *blueprint) {
-    FOR (blueprint->entitys, entity) {
-        destroy(entity);
-    }
-
-    FOR (blueprint->imports, import) {
-        destroy(&import->blueprint);
-    }
-
-    destroy(&blueprint->entitys);
-    destroy(&blueprint->imports);
+    destroy(&blueprint->entities);
+    destroy(&blueprint->local_imports);
+    destroy(&blueprint->named_imports);
 
     INIT_STRUCT(blueprint);
 }
@@ -913,11 +968,8 @@ void destroy(Blueprint *blueprint) {
 
 Blueprint *find_submodule(Blueprint *bp, String name) {
     if (name != "") {
-        FOR (bp->imports, import) {
-            if (import->alias == name) {
-                return &import->blueprint;
-            }
-        }
+        Blueprint **found = find(&bp->named_imports, name);
+        if (found) return *found;
 
         add_diagnostic(DIAG_ERROR, t_format("No imported blueprint %S.\n", name));
         return 0;
@@ -927,11 +979,8 @@ Blueprint *find_submodule(Blueprint *bp, String name) {
 }
 
 Entity *find_dependency(Blueprint *bp, String name) {
-    FOR (bp->entitys, entity) {
-        if (entity->name == name) {
-            return entity;
-        }
-    }
+    Entity **found = find(&bp->entities, name);
+    if (found) return *found;
 
     if (bp->name == "") {
         add_diagnostic(DIAG_ERROR, t_format("No entity %S in blueprint.\n", name));
@@ -943,7 +992,7 @@ Entity *find_dependency(Blueprint *bp, String name) {
 
 void add_build_command(Entity *entity, StringBuilder *builder) {
     if (entity->build_command_count < ENTITY_COMMAND_COUNT) {
-        entity->build_commands[entity->build_command_count] = to_allocated_string(builder, App.string_alloc);
+        entity->build_commands[entity->build_command_count] = to_allocated_string(builder, App.persistent_alloc);
         entity->build_command_count += 1;
     } else {
         add_diagnostic(entity, DIAG_ERROR, "Too many build commands generated.");
@@ -959,7 +1008,7 @@ void print_diagnostics(Entity *entity) {
 void add_diagnostic(Entity *entity, DiagnosticKind kind, String msg) {
     Diagnostic diag = {};
     diag.kind = kind;
-    diag.message = allocate_string(msg, App.string_alloc);
+    diag.message = allocate_string(msg, App.persistent_alloc);
 
     if (kind == DIAG_ERROR) entity->has_errors = true;
     
