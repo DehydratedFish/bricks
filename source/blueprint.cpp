@@ -9,6 +9,7 @@
 INTERNAL String BasicFile =
     "brick: debug {\n"
     "    options(@msvc): \"-Zi\";\n"
+    "    options(@gcc ): \"-g\";\n"
     "}\n";
 
 
@@ -558,8 +559,11 @@ INTERNAL b32 parse_deps(Parser *parser, Entity *entity, b32 skip) {
                 dep.module = allocate_string(dep.module, App.persistent_alloc);
             }
             dep.entity = allocate_string(dep.entity, App.persistent_alloc);
+
+            if (skip) continue;
             append(&entity->dependencies, dep);
         } else if (match(parser, TOKEN_STRING)) {
+            if (skip) continue;
             append(&entity->libraries, allocate_string(parser->previous_token.content, App.persistent_alloc));
         } else {
             parse_error(parser, parser->current_token.loc, "Expected library string or entity identifier.");
@@ -947,9 +951,12 @@ Entity *create_entity() {
 Blueprint *create_blueprint() {
     Blueprint *blueprint = ALLOC(App.persistent_alloc, Blueprint, 1);
 
-#ifdef OS_WINDOWS
+#if defined(OS_WINDOWS)
     blueprint->compiler = "msvc";
     blueprint->linker   = "msvc";
+#elif defined(OS_LINUX)
+    blueprint->compiler = "gcc";
+    blueprint->linker   = "gcc";
 #endif
 
     blueprint->build_type = App.build_type;
@@ -1010,8 +1017,8 @@ void add_diagnostic(Entity *entity, DiagnosticKind kind, String msg) {
     diag.kind = kind;
     diag.message = allocate_string(msg, App.persistent_alloc);
 
-    if (kind == DIAG_ERROR) entity->has_errors = true;
-    
+    if (kind == DIAG_ERROR) entity->status = ENTITY_STATUS_ERROR;
+
     append(&entity->diagnostics, diag);
 }
 

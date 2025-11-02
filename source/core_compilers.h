@@ -4,4 +4,5 @@
 
 
 Compiler load_msvc(); 
+Compiler load_gcc(); 
 

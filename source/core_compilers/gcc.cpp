@@ -1,7 +1,7 @@
 #include "blueprint.h"
 #include "bricks.h"
 #include "string_builder.h"
-#include "platform.h"
+#include "io.h"
 
 
 
@@ -57,20 +57,31 @@ INTERNAL void process_diagnostics(Entity *entity, String output) {
     while (output.size) {
         String line = remove_line(&output);
 
-        if (contains(line, ": error ")) {
+        if (contains(line, ": error:")) {
             add_diagnostic(entity, DIAG_ERROR, line);
-        } else if (contains(line, ": fatal error ")) {
+        } else if (contains(line, ": fatal error:")) {
             add_diagnostic(entity, DIAG_ERROR, line);
-        } else if (contains(line, " Command line error ")) {
-            add_diagnostic(entity, DIAG_ERROR, line);
-        } else if (contains(line, ": warning")) {
+        } else if (contains(line, ": warning:")) {
             add_diagnostic(entity, DIAG_WARNING, line);
-        } else if (contains(line, ": note: ")) {
+        } else if (contains(line, ": note:")) {
             add_diagnostic(entity, DIAG_NOTE, line);
+        } else if (contains(line, ": cannot find ")) {
+            add_diagnostic(entity, DIAG_NOTE, line);
+        } else if (contains(line, ": undefined reference to ")) {
+            add_diagnostic(entity, DIAG_NOTE, line);
+        } else {
+            continue;
+        }
+
+        // NOTE: Add following lines if they are indented. But only if a diagnostic was encountered.
+        while (output.size > 0 && output[0] == ' ') {
+            line = remove_line(&output);
+            add_diagnostic(entity, DIAG_GENERAL, line);
         }
     }
 }
 
+/*
 INTERNAL void msvc_build_command(Allocator alloc, Blueprint *blueprint, Entity *entity) {
     SCOPE_TEMP_STORAGE();
 
@@ -174,12 +185,64 @@ INTERNAL void msvc_build_command(Allocator alloc, Blueprint *blueprint, Entity *
 
     return;
 }
+*/
 
+INTERNAL void gcc_build_command(Allocator alloc, Blueprint *blueprint, Entity *entity) {
+    SCOPE_TEMP_STORAGE();
 
-Compiler load_msvc() {
+    if (entity->status == ENTITY_STATUS_READY) return;
+    if (entity->status == ENTITY_STATUS_ERROR) return;
+
+    StringBuilder builder = {};
+    DEFER(destroy(&builder));
+
+    if (entity->kind == ENTITY_EXECUTABLE) {
+        if (entity->sources.size == 0) {
+            add_diagnostic(entity, DIAG_ERROR, t_format("Executable %S has no source file(s) to build.", entity->name));
+            // TODO: Maybe don't error and just report it?
+            //       So the build can finish if this entity is unused.
+            entity->status = ENTITY_STATUS_ERROR;
+            return;
+        }
+
+        append(&builder, "gcc");
+
+        FOR (entity->options, option) {
+            append(&builder, ' ');
+            append(&builder, *option);
+        }
+
+        FOR (entity->symbols, symbol) {
+            format(&builder, " -D%S", *symbol);
+        }
+
+        FOR (entity->include_folders, dir) {
+            format(&builder, " -I%S", *dir);
+        }
+
+        format(&builder, " -o%S", entity->file_path); // NOTE: /Fe -> executable name
+        // TODO: Intermediate folder for objects if necessary.
+
+        FOR (entity->sources, source) {
+            format(&builder, " \"%S\"", *source);
+        }
+
+        FOR (entity->libraries, lib) {
+            format(&builder, " \"%S\"", *lib);
+        }
+
+        add_build_command(entity, &builder);
+    } else if (entity->kind == ENTITY_LIBRARY) {
+        add_diagnostic(entity, DIAG_ERROR, "Can't build libs.");
+    } else {
+        add_diagnostic(entity, DIAG_ERROR, t_format("Can only build Executables and Libraries. (entity: %S)\n", entity->name));
+    }
+}
+
+Compiler load_gcc() {
     Compiler result = {};
-    result.name  = "msvc";
-    result.generate_commands   = msvc_build_command;
+    result.name  = "gcc";
+    result.generate_commands   = gcc_build_command;
     result.process_diagnostics = process_diagnostics;
 
     return result;

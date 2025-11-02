@@ -64,7 +64,6 @@ struct Entity {
     s32 build_command_count;
 
     List<Diagnostic> diagnostics;
-    b32 has_errors;
 };
 
 enum BlueprintStatus {

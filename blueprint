@@ -36,7 +36,7 @@ executable: bricks {
 
     // sources are the files that need to be build. A string with a leading /
     // spedifies that all following files are in a sub folder.
-    sources: /"source", "bricks.cpp", "blueprint.cpp", "brickyard.cpp", "core_compilers\msvc.cpp";
+    sources: /"source", "bricks.cpp", "blueprint.cpp", "brickyard.cpp", "core_compilers/msvc.cpp";
 
     // dependencies can be complete libraries (like platform specified libs) as strings.
     // Or identifiers specifying Entities (libraries and bricks), also from imports.

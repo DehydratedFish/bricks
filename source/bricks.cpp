@@ -21,7 +21,8 @@ b32 create_trace() {
 }
 
 void load_core_compilers() {
-    append(&App.compilers, load_msvc());
+    //append(&App.compilers, load_msvc());
+    append(&App.compilers, load_gcc());
 }
 
 
@@ -209,6 +210,8 @@ INTERNAL void build(Blueprint *blueprint, Entity *entity) {
             append(&App.trace_file, "\n");
         }
     }
+
+    platform_flush_write_buffer(Console.out);
 
     String extension = {};
     if (entity->kind == ENTITY_EXECUTABLE) {
@@ -403,6 +406,9 @@ INTERNAL b32 get_platform_info(String platform, TargetPlatformInfo *info) {
     if (platform == "win32") {
         *info = {"exe", "lib", "dll"};
         result = true;
+    } else if (platform == "linux") {
+        *info = {"", ".a", ".so"};
+        result = true;
     }
 
     return result;
@@ -443,8 +449,10 @@ s32 application_main(Array<String> args) {
     App.config_folder      = format(App.persistent_alloc, "%S/bricks",     config_folder);
     App.brickyard_file     = format(App.persistent_alloc, "%S/brick.yard", App.config_folder);
 
-#ifdef OS_WINDOWS
+#if defined(OS_WINDOWS)
     App.target_platform = "win32";
+#elif defined(OS_LINUX)
+    App.target_platform = "linux";
 #endif
 
     load_brickyard(&App.brickyard, App.brickyard_file, App.persistent_alloc);
@@ -503,6 +511,7 @@ s32 application_main(Array<String> args) {
             if (entry->hash == 0) continue;
 
             Entity *entity = entry->value;
+
             if (entity->kind == ENTITY_EXECUTABLE) {
                 if ((App.group == "" && entity->groups.size == 0) ||
                     (contains((Array<String>)entity->groups, App.group))) {
