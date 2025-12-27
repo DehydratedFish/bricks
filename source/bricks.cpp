@@ -21,7 +21,7 @@ b32 create_trace() {
 }
 
 void load_core_compilers() {
-    //append(&App.compilers, load_msvc());
+    append(&App.compilers, load_msvc());
     append(&App.compilers, load_gcc());
 }
 
